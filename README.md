@@ -106,13 +106,6 @@ Key threads:
    - Use **Acquisition → Stop Recording** or press **Ctrl+T**. Files are finalized automatically.
 
 ---
-## BUTI Arduino Box Firmware (BURST_v3_02)
-
-- The BUTI Arduino Box firmware loops at a configurable interval (`startup.timeDelay`).
-- The firmware toggles `CamTrig` HIGH→LOW to expose a single frame.
-- Streams `frame_index, elapsed_time_s, force_value` from the BUTI Arduino Box over serial with microsecond precision.
-
----
 ## Troubleshooting
 
 | Issue                | Fix                                                     |
