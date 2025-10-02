@@ -1,0 +1,128 @@
+/* Base window background */
+QMainWindow {
+    background-color: #3a3a3a; /* use medium grey instead of near-black */
+    color: #ffffff;
+    font-family: "Segoe UI", sans-serif;
+    font-size: 11pt;
+}
+
+/* Menu bar */
+QMenuBar {
+    background-color: #565656; /* lighter grey */
+    color: #ffffff;
+}
+QMenuBar::item:selected {
+    background-color: #787878;
+}
+
+/* Group boxes */
+QGroupBox {
+    border: 1px solid #777;
+    border-radius: 5px;
+    /* Extra top margin so the title doesn't collide with contents */
+    margin-top: 16px;
+    font-weight: bold;
+    color: #e0e0e0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    /* Small bottom padding for clearer separation */
+    padding: 0 5px 2px 5px;
+}
+
+/* Labels */
+QLabel {
+    color: #f0f0f0;
+}
+
+/* Buttons */
+QPushButton {
+    background-color: #777777;
+    color: white;
+    border: 1px solid #999999;
+    border-radius: 4px;
+    padding: 5px 10px;
+}
+QPushButton:hover {
+    background-color: #999999;
+    border: 1px solid #bbbbbb;
+}
+QPushButton:disabled {
+    background-color: #5a5a5a;
+    color: #999999;
+}
+
+/* ComboBoxes */
+QComboBox {
+    background-color: #5a5a5a;
+    color: white;
+    border: 1px solid #888888;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+/* SpinBoxes, LineEdits */
+QLineEdit, QSpinBox, QDoubleSpinBox {
+    background-color: #555555;
+    color: #ffffff;
+    border: 1px solid #888888;
+    border-radius: 4px;
+    padding: 3px;
+}
+
+/* Tab widgets */
+QTabWidget::pane {
+    border: 1px solid #777;
+    padding: 5px;
+}
+QTabBar::tab {
+    background: #565656;
+    color: #eeeeee;
+    padding: 5px 10px;
+    border: 1px solid #777;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+QTabBar::tab:selected {
+    background: #777777;
+    color: white;
+}
+
+/* Plot canvas border */
+QWidget#plotCanvas {
+    border: 1px solid #888888;
+    background-color: #404040;
+}
+
+/* Plot export button specifically */
+QPushButton#exportPlotButton {
+    background-color: #2f6fad;
+    border: 1px solid #4185d0;
+}
+QPushButton#exportPlotButton:hover {
+    background-color: #3e7fd6;
+}
+/* Dialog and message box styles */
+QDialog, QMessageBox {
+    background-color: #3a3a3a;
+    color: #ffffff;
+}
+QDialog QLabel, QMessageBox QLabel {
+    color: #ffffff;
+}
+QDialog QPushButton, QMessageBox QPushButton {
+    background-color: #777777;
+    color: #ffffff;
+    border: 1px solid #999999;
+    border-radius: 4px;
+    padding: 5px 10px;
+}
+QDialog QPushButton:hover, QMessageBox QPushButton:hover {
+    background-color: #999999;
+    border: 1px solid #bbbbbb;
+}
+QDialog QPushButton:disabled, QMessageBox QPushButton:disabled {
+    background-color: #5a5a5a;
+    color: #999999;
+}
