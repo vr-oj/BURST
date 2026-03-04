@@ -77,6 +77,7 @@ from utils.config import (
     SERIAL_CMD_STOP,
     SERIAL_CMD_HOME,
     SERIAL_CMD_RESET,
+    SERIAL_CMD_STEP,
 )
 from utils.path_helpers import get_next_fill_folder, resource_path
 from ui.canvas.qtcamera_widget import QtCameraWidget
@@ -283,6 +284,7 @@ class MainWindow(QMainWindow):
         self.top_ctrl.start_requested.connect(self._on_start_pump)
         self.top_ctrl.stop_requested.connect(self._on_stop_pump)
         self.top_ctrl.reset_requested.connect(self._on_reset_burst)
+        self.top_ctrl.step_requested.connect(self._on_step)
         top_row_lay.addWidget(self.top_ctrl, stretch=2)
 
 
@@ -846,6 +848,16 @@ class MainWindow(QMainWindow):
                 "BUTI Arduino Box not connected; cannot send reset command.", 3000
             )
         self._serial_start_sent = False
+
+    @pyqtSlot()
+    def _on_step(self):
+        """Send the step command to the BUTI Arduino Box."""
+        if self._send_serial_command(SERIAL_CMD_STEP):
+            self.statusBar().showMessage("Step command sent to the BUTI Arduino Box.", 3000)
+        else:
+            self.statusBar().showMessage(
+                "BUTI Arduino Box not connected; cannot send step command.", 3000
+            )
 
     def _set_initial_control_states(self):
         if hasattr(self, "recording_action"):
