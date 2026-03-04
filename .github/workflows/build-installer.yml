@@ -44,3 +44,4 @@ jobs:
         with:
           files: installer_output/BURST_Setup.exe
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
