@@ -13,19 +13,15 @@ icon_file = os.path.join("buti_app", "ui", "icons", "BURST.ico")
 
 
 def _find_imagingcontrol4_root():
-    candidates = []
-    virtual_env = os.environ.get("VIRTUAL_ENV")
-    if virtual_env:
-        candidates.append(Path(virtual_env) / "Lib" / "site-packages" / "imagingcontrol4")
-    candidates.extend(
-        [
-            Path(".venv") / "Lib" / "site-packages" / "imagingcontrol4",
-            Path(".butienv") / "Lib" / "site-packages" / "imagingcontrol4",
-        ]
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("imagingcontrol4")
+        if spec and spec.submodule_search_locations:
+            root = Path(spec.submodule_search_locations[0])
+            if root.exists():
+                return root
+    except (ImportError, ValueError):
+        pass
     return None
 
 
