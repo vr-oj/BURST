@@ -5,6 +5,7 @@ import os
 import re
 import traceback
 import logging
+from logging.handlers import RotatingFileHandler
 try:
     import imagingcontrol4 as ic4  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
@@ -26,22 +27,27 @@ logging.getLogger("fontTools").setLevel(logging.WARNING)
 # ------------------------------
 # Configure Python-level logging
 # ------------------------------
+log_file_path = os.path.join(config.BURST_RESULTS_DIR, "buti_app.log")
+
+# 2. Create the File Handler (capped at 5MB)
+file_handler = RotatingFileHandler(
+    log_file_path,
+    maxBytes=5 * 1024 * 1024,
+    backupCount=1
+)
+
+# 3. Create the Console Handler (for your PyCharm terminal)
+console_handler = logging.StreamHandler(sys.stdout)
+
+# 4. Initialize logging with BOTH handlers
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s [%(name)s:%(lineno)d] - %(message)s",
+    handlers=[file_handler, console_handler]
 )
-log = logging.getLogger(__name__)
 
-# A separate module-level logger for setup steps
-module_log = logging.getLogger("burst_app.setup")
-if not module_log.handlers:
-    handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s [%(name)s:%(lineno)d] - %(message)s"
-    )
-    handler.setFormatter(formatter)
-    module_log.addHandler(handler)
-    module_log.setLevel(logging.INFO)
+log = logging.getLogger(__name__)
+log.info(f"Application logging initialized. Writing logs to: {log_file_path}")
 
 
 # === load_app_setting / save_app_setting stubs if missing ===
