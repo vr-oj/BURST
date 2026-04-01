@@ -29,17 +29,16 @@ logging.getLogger("fontTools").setLevel(logging.WARNING)
 # ------------------------------
 log_file_path = os.path.join(config.BURST_RESULTS_DIR, "buti_app.log")
 
-# 2. Create the File Handler (capped at 5MB)
+# Create the File Handler (capped at 5MB)
 file_handler = RotatingFileHandler(
     log_file_path,
     maxBytes=5 * 1024 * 1024,
     backupCount=1
 )
-
-# 3. Create the Console Handler (for your PyCharm terminal)
+# Create the Console Handler (for output to terminal)
 console_handler = logging.StreamHandler(sys.stdout)
 
-# 4. Initialize logging with BOTH handlers
+# Initialize logging with both output handlers
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s [%(name)s:%(lineno)d] - %(message)s",
