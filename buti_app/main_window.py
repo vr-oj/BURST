@@ -1164,7 +1164,7 @@ class MainWindow(QMainWindow):
         # 7) Wire up thread start → worker.start_recording()
         self._recorder_thread.started.connect(self._recorder_worker.start_recording)
         #    and worker.finished → thread.quit() + worker.deleteLater()
-        self._recorder_worker.finished.connect(self._recorder_thread.quit)
+        self._recorder_worker.finished.connect(self._recorder_thread.quit, Qt.DirectConnection)
         self._recorder_worker.finished.connect(self._recorder_worker.deleteLater)
         self._recorder_thread.finished.connect(self._recorder_thread.deleteLater)
 
@@ -1272,9 +1272,18 @@ class MainWindow(QMainWindow):
         self._recorder_thread.finished.connect(self._recorder_thread.deleteLater)
 
         # Tell the worker to stop after receiving the final packet
-        QMetaObject.invokeMethod(
-            self._recorder_worker, "request_stop", Qt.QueuedConnection
-        )
+        # Check if the camera is still running. If not, bypass the frame-matching wait.
+        camera_active = self.camera_thread is not None and self.camera_thread.isRunning()
+
+        if camera_active:
+            QMetaObject.invokeMethod(
+                self._recorder_worker, "request_stop", Qt.QueuedConnection
+            )
+        else:
+            log.warning("Camera inactive during stop request. Forcing file closure.")
+            QMetaObject.invokeMethod(
+                self._recorder_worker, "stop_recording", Qt.QueuedConnection
+            )
 
         # Notify CameraControlPanel that recording has stopped
         if self.camera_control_panel:
@@ -1314,24 +1323,43 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         log.info("MainWindow closeEvent triggered.")
 
-        # 1) If RecordingManager is still running, request a graceful stop and wait.
-        if self._recorder_worker and self._recorder_thread:
-            if self._recorder_thread.isRunning():
-                log.info("Stopping RecordingManager...")
-                # Ask the worker to stop via queued call
-                QMetaObject.invokeMethod(
-                    self._recorder_worker, "request_stop", Qt.QueuedConnection
-                )
-                # Wait up to 3 seconds for it to finish
-                if not self._recorder_thread.wait(3000):
-                    log.warning(
-                        "RecordingManager thread did not stop gracefully; forcing terminate."
-                    )
-                    try:
-                        self._recorder_thread.terminate()
-                    except Exception:
-                        pass
-                    self._recorder_thread.wait(500)
+        # --- 1. ACCIDENTAL CLOSE PROTECTION ---
+        if self._recorder_thread and self._recorder_thread.isRunning():
+            # The app is still recording! Ask the user if they are sure.
+            reply = QMessageBox.warning(
+                self,
+                "Recording in Progress",
+                "A recording is currently active.\n\nAre you sure you want to exit? The recording will be forcefully stopped.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No  # Default to 'No' so they don't accidentally hit Enter and close it
+            )
+
+            if reply == QMessageBox.No:
+                # User misclicked! Cancel the close event.
+                log.info("App closure cancelled by user. Recording continues.")
+                event.ignore()
+                return  # Stop executing closeEvent, app stays open!
+
+            # --- 2. INTENTIONAL CLOSE (EMERGENCY BRAKE) ---
+            # If we reach here, the user clicked "Yes". We must tear down aggressively to save the files.
+            log.info("User confirmed app closure. Stopping RecordingManager forcefully...")
+
+            # Force immediate shutdown of files (bypass pending frame checks)
+            QMetaObject.invokeMethod(
+                self._recorder_worker, "stop_recording", Qt.QueuedConnection
+            )
+
+            # Explicitly tell the worker thread's event loop to quit
+            self._recorder_thread.quit()
+
+            # Wait up to 3 seconds for it to finish safely
+            if not self._recorder_thread.wait(3000):
+                log.warning("RecordingManager thread did not stop gracefully; forcing terminate.")
+                try:
+                    self._recorder_thread.terminate()
+                except Exception:
+                    pass
+                self._recorder_thread.wait(500)
 
         # Now that the thread is done, delete both worker and thread objects if they exist
         if self._recorder_worker:
