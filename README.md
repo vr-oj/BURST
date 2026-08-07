@@ -37,7 +37,9 @@
       recording_*.tif   # Grayscale stack, one frame per BUTI Arduino Box trigger
   ```
 - Default save location is `~/Documents/BURST Results`. Set `BURST_RESULTS_DIR` (or the legacy `BUTI_RESULTS_DIR`) to override.
-- Playback tools support zoom, pan, ROI selection, and exporting annotated frames.
+- Playback tools support zoom, pan, ROI selection, exporting annotated frames,
+  and cropping an ROI across the complete TIFF recording without changing the
+  original recording or its synchronized CSV data.
 
 ---
 ## Under the Hood
@@ -104,6 +106,10 @@ Key threads:
    - BURST waits for the first BUTI Arduino Box tick before writing data.
 5. Stop recording:
    - Use **Acquisition → Stop Recording** or press **Ctrl+T**. Files are finalized automatically.
+6. Crop a recording (optional):
+   - Open the recording in **Playback**, select **Draw ROI**, drag over the
+     region to retain, and choose **Export Cropped TIFF**. BURST writes a new
+     raw TIFF stack and leaves the original TIFF and synchronized CSV intact.
 
 ---
 ## Troubleshooting
