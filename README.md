@@ -67,10 +67,14 @@ Key threads:
 ## Installation
 
 ### Windows Executable
-1. Download the latest BURST release from the GitHub Releases page.
-2. Extract the archive into a folder (e.g., `C:\Program Files\BURST`).
+1. Download `BURST_Setup_<version>.exe` from the GitHub release or Actions artifact.
+2. Run the installer and follow the setup wizard.
 3. Install the IC4 SDK and GenTL Producer from The Imaging Source.
-4. Launch `BURST.exe`.
+4. Launch **BURST** from the Start menu or optional desktop shortcut.
+
+The current installer is not code-signed, so Windows SmartScreen may display an
+unknown-publisher warning. An Authenticode signing certificate is required to
+remove that warning for an official public release.
 
 ### From Source
 1. Clone the repository:
@@ -88,6 +92,55 @@ Key threads:
    pip install -r requirements.txt
    ```
 4. Install the IC4 SDK and GenTL Producer (required for DMK cameras).
+
+### Building a Windows Test Installer
+
+BURST uses one version source: `buti_app/VERSION`. The current test version is
+`1.2.0-beta.1`. Update only that file when preparing another build.
+
+Before this workflow has been merged into the repository's default branch, use
+a prerelease tag to build the candidate with GitHub Actions:
+
+1. Commit and push the candidate changes to the `v2` branch.
+2. Create and push a tag matching `buti_app/VERSION`:
+
+   ```bash
+   git tag -a v1.2.0-beta.1 -m "BURST 1.2.0 beta 1"
+   git push origin v1.2.0-beta.1
+   ```
+
+3. Download `BURST_Setup_1.2.0-beta.1.exe` from the GitHub prerelease after the
+   **Build Windows Installer** job completes.
+4. Run the installer on the test computer.
+
+A prerelease tag creates both a downloadable workflow artifact and a GitHub
+prerelease. Do not move or reuse a published tag: if the candidate needs fixes,
+bump `buti_app/VERSION` (for example, to `1.2.0-beta.2`) and create a new tag.
+
+Once this workflow exists on the default branch, **Actions → Build Windows
+Installer → Run workflow** can also build any selected branch. A manual run
+creates a short-lived installable artifact without creating a GitHub release.
+
+To build directly on Windows instead:
+
+```powershell
+py -3.11 -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r buti_app\requirements.txt
+pip install pyinstaller==6.21.0
+python -m unittest discover -s tests -v
+pyinstaller --noconfirm --clean BURST.spec
+iscc installer.iss
+```
+
+The versioned installer will be written to `installer_output`.
+
+After the candidate passes hardware testing, merge it into `main`, change
+`buti_app/VERSION` to the final version (`1.2.0`), commit that change, then
+create and push the matching tag (`v1.2.0`). The tag
+must point to the final-version commit and exactly match the application version
+with a leading `v`; the build will reject mismatches.
 
 ---
 ## Running BURST

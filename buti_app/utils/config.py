@@ -8,6 +8,8 @@ from pathlib import Path
 
 from PyQt5.QtCore import QDir, QStandardPaths
 
+from utils.version import APP_VERSION
+
 DOCUMENTS_DIR = os.path.join(os.path.expanduser("~"), "Documents")
 
 DEFAULT_RESULTS_DIR = os.path.join(DOCUMENTS_DIR, "BURST Results")
@@ -117,7 +119,6 @@ SERIAL_COMMANDS = {
 }
 
 APP_NAME = "BURST"
-APP_VERSION = "1.0"
 ABOUT_TEXT = f"""
 <strong>{APP_NAME} v{APP_VERSION}</strong>
 <p>BURST stands for BUTI Uniaxial Recording of Strain &amp; Tension.</p>

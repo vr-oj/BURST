@@ -6,10 +6,29 @@ consistent, polished look across all platforms.
 """
 
 import os
+import runpy
 from pathlib import Path
 
 source_script = os.path.join("buti_app", "buti_app.py")
 icon_file = os.path.join("buti_app", "ui", "icons", "BURST.ico")
+version_scope = runpy.run_path(os.path.join("buti_app", "utils", "version.py"))
+app_version = version_scope["APP_VERSION"]
+
+
+def _write_windows_version_resource():
+    if os.name != "nt":
+        return None
+
+    version_path = Path("build") / "BURST-version-info.txt"
+    version_path.parent.mkdir(parents=True, exist_ok=True)
+    version_path.write_text(
+        version_scope["render_windows_version_info"](app_version),
+        encoding="utf-8",
+    )
+    return str(version_path)
+
+
+version_resource = _write_windows_version_resource()
 
 
 def _find_imagingcontrol4_root():
@@ -32,9 +51,13 @@ if imagingcontrol4_root is None:
     )
 
 data_files = [
-    (os.path.join("buti_app", "ui", "icons", "*"), os.path.join("buti_app", "ui", "icons")),
+    (
+        os.path.join("buti_app", "ui", "icons", "*"),
+        os.path.join("buti_app", "ui", "icons"),
+    ),
     (os.path.join("buti_app", "ui", "style.qss"), os.path.join("buti_app", "ui")),
     (os.path.join("buti_app", "docs", "*"), os.path.join("buti_app", "docs")),
+    (os.path.join("buti_app", "VERSION"), "buti_app"),
 ]
 
 data_files.append((str(imagingcontrol4_root / "*"), "imagingcontrol4"))
@@ -62,7 +85,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="BURST 1.0",
+    name="BURST",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -76,6 +99,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_file,
+    version=version_resource,
 )
 
 coll = COLLECT(
