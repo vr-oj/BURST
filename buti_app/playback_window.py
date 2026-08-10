@@ -183,6 +183,7 @@ class GraphicsImageView(QGraphicsView):
     """Interactive view for displaying and selecting ROIs."""
 
     roi_changed = pyqtSignal(QRectF)
+    roi_finished = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -227,8 +228,13 @@ class GraphicsImageView(QGraphicsView):
     # ─── ROI Handling ────────────────────────────────────────────────────
     def enable_roi(self, enabled: bool):
         self._drawing_roi = enabled
-        if not enabled:
+        if enabled:
+            self.setDragMode(QGraphicsView.NoDrag)
+            self.viewport().setCursor(Qt.CrossCursor)
+        else:
             self._start_pos = None
+            self.viewport().unsetCursor()
+            self.setDragMode(QGraphicsView.ScrollHandDrag)
 
     def clear_roi(self):
         if self._roi_item is not None:
@@ -276,7 +282,7 @@ class GraphicsImageView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self._drawing_roi and self._start_pos:
+        if self._drawing_roi and self._start_pos is not None:
             cur = self.mapToScene(event.pos())
             self._update_roi(cur)
             event.accept()
@@ -284,10 +290,16 @@ class GraphicsImageView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if self._drawing_roi and event.button() == Qt.LeftButton and self._start_pos:
+        if (
+            self._drawing_roi
+            and event.button() == Qt.LeftButton
+            and self._start_pos is not None
+        ):
             cur = self.mapToScene(event.pos())
             self._update_roi(cur)
             self._start_pos = None
+            if self._normalized_roi is not None:
+                self.roi_finished.emit()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -425,7 +437,9 @@ class PlaybackWindow(QMainWindow):
         self.overlay_cb.toggled.connect(self._update_overlay)
 
         self.roi_btn = QPushButton("Draw ROI")
+        self.roi_btn.setObjectName("roiDrawButton")
         self.roi_btn.setCheckable(True)
+        self.roi_btn.setToolTip("Select, then drag over the image to define a crop")
         self.zoom_roi_btn = QPushButton("Zoom ROI")
         self.export_roi_btn = QPushButton("Export ROI PNG")
         self.export_roi_stack_btn = QPushButton("Export Cropped TIFF")
@@ -489,6 +503,7 @@ class PlaybackWindow(QMainWindow):
         self.export_roi_btn.clicked.connect(self.export_roi)
         self.export_roi_stack_btn.clicked.connect(self.export_roi_stack)
         self.view.roi_changed.connect(self._on_roi_changed)
+        self.view.roi_finished.connect(self._finish_roi_drawing)
 
         self.zoom_roi_btn.setEnabled(False)
         self.export_roi_btn.setEnabled(False)
@@ -822,6 +837,29 @@ class PlaybackWindow(QMainWindow):
     # ─── ROI Helpers ─────────────────────────────────────────────────────
     def toggle_roi_mode(self, checked: bool):
         self.view.enable_roi(checked)
+        self.roi_btn.setText("Cancel ROI" if checked else "Draw ROI")
+        if checked:
+            self.statusBar().showMessage(
+                "ROI mode active — drag over the image to select the crop area"
+            )
+        else:
+            bounds = self._roi_frame_bounds()
+            if bounds is None:
+                self.statusBar().showMessage("ROI drawing canceled", 1500)
+            else:
+                x0, y0, x1, y1 = bounds
+                self.statusBar().showMessage(
+                    f"ROI selected: {x1 - x0}×{y1 - y0} px at ({x0}, {y0})"
+                )
+
+    def _finish_roi_drawing(self):
+        bounds = self._roi_frame_bounds()
+        self.roi_btn.setChecked(False)
+        if bounds is not None:
+            x0, y0, x1, y1 = bounds
+            self.statusBar().showMessage(
+                f"ROI selected: {x1 - x0}×{y1 - y0} px at ({x0}, {y0})"
+            )
 
     def _roi_frame_bounds(self):
         if not self.frames:
