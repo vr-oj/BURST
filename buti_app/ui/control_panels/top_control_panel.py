@@ -32,6 +32,7 @@ class TopControlPanel(QWidget):
     start_requested = pyqtSignal()
     stop_requested = pyqtSignal()
     reset_requested = pyqtSignal()
+    step_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -135,6 +136,12 @@ class TopControlPanel(QWidget):
         self.reset_btn.setProperty("cssClass", "ghost")
         self.reset_btn.clicked.connect(self.reset_requested.emit)
         command_layout.addWidget(self.reset_btn)
+
+        self.step_btn = QPushButton("Step")
+        self.step_btn.setEnabled(False)
+        self.step_btn.setProperty("cssClass", "ghost")
+        self.step_btn.clicked.connect(self.step_requested.emit)
+        command_layout.addWidget(self.step_btn)
 
         self._apply_styles()
         self._set_status_badge("Disconnected", False)
@@ -287,7 +294,7 @@ class TopControlPanel(QWidget):
 
         self._set_status_badge(text, connected)
 
-        for btn in (self.start_btn, self.stop_btn, self.reset_btn, self.zero_btn):
+        for btn in (self.start_btn, self.stop_btn, self.reset_btn, self.zero_btn, self.step_btn):
             btn.setEnabled(connected)
 
     def update_burst_data(

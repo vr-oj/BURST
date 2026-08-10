@@ -89,7 +89,7 @@ class RecordingManager(QObject):
         self._pending_samples.clear()
 
         log.info(
-            f"Ready to record →\n  CSV will be: {self._csv_path}\n  TIFF will be: {self._tiff_path}"
+            f"Ready to record ->\n  CSV will be: {self._csv_path}\n  TIFF will be: {self._tiff_path}"
         )
         log.info("Waiting for the first BUTI Arduino Box tick to open files...")
         # Notify the GUI that the worker thread finished setup and the files
@@ -135,7 +135,7 @@ class RecordingManager(QObject):
                 self.is_recording = False
                 return
             log.info(
-                f"Recording truly started →\n  CSV: {self._csv_path}\n  TIFF: {self._tiff_path}"
+                f"Recording truly started ->\n  CSV: {self._csv_path}\n  TIFF: {self._tiff_path}"
             )
 
         if self.csv_writer:
