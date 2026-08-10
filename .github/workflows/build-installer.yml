@@ -1,0 +1,79 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Read and validate application version
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content buti_app/VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+(-(alpha|beta|rc)\.\d+)?$') {
+            throw "Invalid version in buti_app/VERSION: $version"
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match application version v$version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r buti_app/requirements.txt
+          pip install pyinstaller==6.21.0
+
+      - name: Run automated tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm --clean BURST.spec
+
+      - name: Build installer with Inno Setup
+        run: iscc installer.iss
+
+      - name: Generate SHA-256 checksum
+        shell: pwsh
+        run: |
+          $installer = "installer_output/BURST_Setup_${{ steps.version.outputs.version }}.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLower()
+          $filename = Split-Path -Leaf $installer
+          "$hash  $filename" | Set-Content -Encoding ascii "$installer.sha256"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BURST_Setup_${{ steps.version.outputs.version }}
+          path: |
+            installer_output/BURST_Setup_${{ steps.version.outputs.version }}.exe
+            installer_output/BURST_Setup_${{ steps.version.outputs.version }}.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            installer_output/BURST_Setup_${{ steps.version.outputs.version }}.exe
+            installer_output/BURST_Setup_${{ steps.version.outputs.version }}.exe.sha256
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

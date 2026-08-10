@@ -1,5 +1,7 @@
-/.venv
-/build
-*.pyc
-/dist
-/installer_output
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+installer_output/
+

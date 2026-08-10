@@ -48,6 +48,10 @@ QPushButton:hover {
     background-color: #999999;
     border: 1px solid #bbbbbb;
 }
+QPushButton#roiDrawButton:checked {
+    background-color: #2f6fad;
+    border: 1px solid #6aa9e9;
+}
 QPushButton:disabled {
     background-color: #5a5a5a;
     color: #999999;

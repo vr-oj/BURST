@@ -8,6 +8,8 @@ from pathlib import Path
 
 from PyQt5.QtCore import QDir, QStandardPaths
 
+from utils.version import APP_VERSION
+
 DOCUMENTS_DIR = os.path.join(os.path.expanduser("~"), "Documents")
 
 DEFAULT_RESULTS_DIR = os.path.join(DOCUMENTS_DIR, "BURST Results")
@@ -106,16 +108,17 @@ SERIAL_CMD_START = "G"
 SERIAL_CMD_STOP = "S"
 SERIAL_CMD_HOME = "H"
 SERIAL_CMD_RESET = "R"
+SERIAL_CMD_STEP = "Z"
 
 SERIAL_COMMANDS = {
     "start": SERIAL_CMD_START,
     "stop": SERIAL_CMD_STOP,
     "home": SERIAL_CMD_HOME,
     "reset": SERIAL_CMD_RESET,
+    "step": SERIAL_CMD_STEP,
 }
 
 APP_NAME = "BURST"
-APP_VERSION = "1.0"
 ABOUT_TEXT = f"""
 <strong>{APP_NAME} v{APP_VERSION}</strong>
 <p>BURST stands for BUTI Uniaxial Recording of Strain &amp; Tension.</p>
