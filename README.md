@@ -96,51 +96,30 @@ remove that warning for an official public release.
 ### Building a Windows Test Installer
 
 BURST uses one version source: `buti_app/VERSION`. The current test version is
-`1.2.0-beta.1`. Update only that file when preparing another build.
+`1.2.0`. Update only that file when preparing another release.
 
-Before this workflow has been merged into the repository's default branch, use
-a prerelease tag to build the candidate with GitHub Actions:
+To build the installer directly on Windows:
 
-1. Commit and push the candidate changes to the `v2` branch.
-2. Create and push a tag matching `buti_app/VERSION`:
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r buti_app\requirements.txt
+.venv\Scripts\python.exe -m pip install pyinstaller==6.21.0
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean BURST.spec
+iscc installer.iss
+```
 
-   ```bash
-   git tag -a v1.2.0-beta.1 -m "BURST 1.2.0 beta 1"
-   git push origin v1.2.0-beta.1
-   ```
-
-3. Download `BURST_Setup_1.2.0-beta.1.exe` from the GitHub prerelease after the
-   **Build Windows Installer** job completes.
-4. Run the installer on the test computer.
-
-A prerelease tag creates both a downloadable workflow artifact and a GitHub
-prerelease. Do not move or reuse a published tag: if the candidate needs fixes,
-bump `buti_app/VERSION` (for example, to `1.2.0-beta.2`) and create a new tag.
+The installer will be written to
+`installer_output\BURST_Setup_1.2.0.exe`.
 
 Once this workflow exists on the default branch, **Actions → Build Windows
 Installer → Run workflow** can also build any selected branch. A manual run
 creates a short-lived installable artifact without creating a GitHub release.
 
-To build directly on Windows instead:
-
-```powershell
-py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r buti_app\requirements.txt
-pip install pyinstaller==6.21.0
-python -m unittest discover -s tests -v
-pyinstaller --noconfirm --clean BURST.spec
-iscc installer.iss
-```
-
-The versioned installer will be written to `installer_output`.
-
-After the candidate passes hardware testing, merge it into `main`, change
-`buti_app/VERSION` to the final version (`1.2.0`), commit that change, then
-create and push the matching tag (`v1.2.0`). The tag
-must point to the final-version commit and exactly match the application version
-with a leading `v`; the build will reject mismatches.
+After the build passes hardware testing, merge it into `main`, then create and
+push the matching tag (`v1.2.0`). The tag must point to the release commit and
+exactly match the application version with a leading `v`; the build will reject
+mismatches and a valid tag will create the GitHub release.
 
 ---
 ## Running BURST
