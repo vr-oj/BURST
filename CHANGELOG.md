@@ -22,8 +22,9 @@ BUTI Arduino Box and The Imaging Source camera workflow.
 - Made camera orientation session-only so a previous flip cannot silently
   affect the next launch.
 - Added source-pixel live ROI selection and consistent preview/TIFF transforms.
-- Rebalanced the workspace around equal Camera and Plot views, a compact BUTI
-  status strip, and a prominent Start/Stop Recording control.
+- Rebalanced the workspace around equal Camera and Plot views, compact
+  side-by-side camera settings and capture options, a shallow BUTI status strip,
+  and a prominent Start/Stop Recording control.
 - Reorganized Plot Controls into clear X- and Y-axis modules.
 
 ### Playback and export

@@ -50,6 +50,12 @@ class MainCardUiTests(unittest.TestCase):
         self.assertIs(camera._embedded_control_panel, controls)
         self.assertFalse(camera.advanced_controls.isHidden())
         self.assertFalse(hasattr(camera, "device_combo"))
+        self.assertEqual(camera.settings_body_layout.count(), 2)
+        self.assertEqual(camera.settings_body_layout.stretch(0), 7)
+        self.assertEqual(camera.settings_body_layout.stretch(1), 3)
+        self.assertEqual(
+            camera.capture_options_card.property("cssClass"), "subCard"
+        )
         camera.close()
 
     def test_local_camera_and_plot_settings_are_visible(self):

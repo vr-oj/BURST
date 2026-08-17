@@ -7,7 +7,6 @@ from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QVBoxLayout,
-    QGridLayout,
     QLabel,
     QPushButton,
     QCheckBox,
@@ -73,6 +72,11 @@ class CameraInfoPanel(QWidget):
         panel_layout.addLayout(header)
         panel_layout.addWidget(self._create_divider())
 
+        self.settings_body_layout = QHBoxLayout()
+        self.settings_body_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_body_layout.setSpacing(12)
+        panel_layout.addLayout(self.settings_body_layout)
+
         self.advanced_controls = QWidget()
         controls_layout = QVBoxLayout(self.advanced_controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
@@ -85,22 +89,22 @@ class CameraInfoPanel(QWidget):
         self.embedded_controls_layout.setContentsMargins(0, 0, 0, 0)
         self.embedded_controls_layout.setSpacing(0)
         controls_layout.addLayout(self.embedded_controls_layout)
-        panel_layout.addWidget(self.advanced_controls)
+        self.settings_body_layout.addWidget(self.advanced_controls, 7)
 
-        panel_layout.addWidget(self._create_divider())
+        self.capture_options_card = QFrame()
+        self.capture_options_card.setProperty("cssClass", "subCard")
+        self.capture_options_card.setMinimumWidth(220)
+        self.capture_options_card.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Expanding
+        )
+        options_layout = QVBoxLayout(self.capture_options_card)
+        options_layout.setContentsMargins(10, 8, 10, 8)
+        options_layout.setSpacing(6)
+        self.settings_body_layout.addWidget(self.capture_options_card, 3)
 
-        transform_grid = QGridLayout()
-        transform_grid.setContentsMargins(0, 0, 0, 0)
-        transform_grid.setHorizontalSpacing(8)
-        transform_grid.setVerticalSpacing(6)
-        transform_grid.setColumnStretch(3, 1)
-        panel_layout.addLayout(transform_grid)
-
-        transform_label = QLabel("Orientation")
-        transform_label.setProperty("cssClass", "detailLabel")
-        transform_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        transform_label.setFixedWidth(92)
-        transform_grid.addWidget(transform_label, 0, 0)
+        orientation_label = QLabel("ORIENTATION")
+        orientation_label.setProperty("cssClass", "sectionLabel")
+        options_layout.addWidget(orientation_label)
 
         self.mirror_horizontal_cb = QCheckBox("Flip Left/Right")
         self.mirror_vertical_cb = QCheckBox("Flip Up/Down")
@@ -112,22 +116,35 @@ class CameraInfoPanel(QWidget):
         )
         self.mirror_horizontal_cb.setToolTip(transform_help)
         self.mirror_vertical_cb.setToolTip(transform_help)
+
+        orientation_row = QHBoxLayout()
+        orientation_row.setContentsMargins(0, 0, 0, 0)
+        orientation_row.setSpacing(10)
+        orientation_row.addWidget(self.mirror_horizontal_cb)
+        orientation_row.addWidget(self.mirror_vertical_cb)
+        orientation_row.addStretch()
+        options_layout.addLayout(orientation_row)
+
+        options_layout.addWidget(self._create_divider())
+
+        roi_label = QLabel("RECORDING ROI")
+        roi_label.setProperty("cssClass", "sectionLabel")
+        options_layout.addWidget(roi_label)
+
         self.roi_button = QPushButton("Draw ROI")
         self.roi_button.setProperty("cssClass", "ghost")
         self.roi_button.setEnabled(False)
         self.clear_roi_button = QPushButton("Clear ROI")
         self.clear_roi_button.setProperty("cssClass", "ghost")
         self.clear_roi_button.setEnabled(False)
-        transform_grid.addWidget(self.mirror_horizontal_cb, 0, 1)
-        transform_grid.addWidget(self.mirror_vertical_cb, 0, 2)
 
-        roi_label = QLabel("Recording ROI")
-        roi_label.setProperty("cssClass", "detailLabel")
-        roi_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        roi_label.setFixedWidth(92)
-        transform_grid.addWidget(roi_label, 1, 0)
-        transform_grid.addWidget(self.roi_button, 1, 1)
-        transform_grid.addWidget(self.clear_roi_button, 1, 2)
+        roi_row = QHBoxLayout()
+        roi_row.setContentsMargins(0, 0, 0, 0)
+        roi_row.setSpacing(6)
+        roi_row.addWidget(self.roi_button, 1)
+        roi_row.addWidget(self.clear_roi_button, 1)
+        options_layout.addLayout(roi_row)
+        options_layout.addStretch()
 
         self.setStyleSheet(PANEL_STYLESHEET)
         self.update_status("Disconnected")
