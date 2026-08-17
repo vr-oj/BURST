@@ -1,7 +1,12 @@
 import json
 import unittest
 
-from buti_app.utils.roi import add_crop_to_description, normalized_roi_to_bounds
+from buti_app.utils.roi import (
+    add_crop_to_description,
+    bounds_to_normalized_roi,
+    normalized_roi_to_bounds,
+    pixel_roi_to_bounds,
+)
 
 
 class NormalizedRoiToBoundsTests(unittest.TestCase):
@@ -30,6 +35,31 @@ class NormalizedRoiToBoundsTests(unittest.TestCase):
         self.assertIsNone(
             normalized_roi_to_bounds((1.1, 1.1, 1.2, 1.2), (500, 1000))
         )
+
+    def test_manual_pixel_bounds_round_trip_exactly(self):
+        bounds = (37, 72, 128, 125)
+        normalized = bounds_to_normalized_roi(bounds, (480, 640))
+
+        self.assertEqual(
+            normalized_roi_to_bounds(normalized, (480, 640)),
+            bounds,
+        )
+
+
+class PixelRoiTests(unittest.TestCase):
+    def test_converts_position_and_size_to_exclusive_bounds(self):
+        self.assertEqual(
+            pixel_roi_to_bounds(10, 20, 100, 80, (480, 640)),
+            (10, 20, 110, 100),
+        )
+
+    def test_rejects_roi_that_does_not_fit_source(self):
+        with self.assertRaisesRegex(ValueError, "does not fit"):
+            pixel_roi_to_bounds(600, 450, 100, 50, (480, 640))
+
+    def test_rejects_empty_roi(self):
+        with self.assertRaisesRegex(ValueError, "at least 1 pixel"):
+            pixel_roi_to_bounds(0, 0, 0, 10, (480, 640))
 
 
 class CropDescriptionTests(unittest.TestCase):

@@ -67,7 +67,11 @@ class WelcomeDialog(QDialog):
             ("settings.svg", "Adjust Exposure/Gain", "Use controls to fine-tune camera settings"),
             ("sync.svg", "Zero BURST", "Make sure force is zero"),
             ("record.svg", "Start Recording", "Click Start Recording to begin acquisition"),
-            ("stop.svg", "Stop Recording", "Click Stop Recording when finished"),
+            (
+                "stop.svg",
+                "Finish Recording",
+                "BURST stops when device data ends, or click Stop Recording",
+            ),
             ("export.svg", "Playback & Export", "Click Playback to review and export frames"),
         ]
 

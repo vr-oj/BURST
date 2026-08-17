@@ -56,6 +56,10 @@ data_files = [
         os.path.join("buti_app", "ui", "icons"),
     ),
     (os.path.join("buti_app", "ui", "style.qss"), os.path.join("buti_app", "ui")),
+    (
+        os.path.join("buti_app", "ui", "sounds", "*"),
+        os.path.join("buti_app", "ui", "sounds"),
+    ),
     (os.path.join("buti_app", "docs", "*"), os.path.join("buti_app", "docs")),
     (os.path.join("buti_app", "VERSION"), "buti_app"),
 ]
@@ -68,7 +72,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=data_files,
-    hiddenimports=["imagingcontrol4"],
+    hiddenimports=["imagingcontrol4", "PyQt5.QtMultimedia"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

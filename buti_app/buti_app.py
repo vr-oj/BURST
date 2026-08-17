@@ -251,6 +251,10 @@ def main_app_entry():
     if not getattr(welcome, "_skip", False):
         welcome.exec_()
 
+    # Match BRAID's silent startup behavior, after the welcome dialog is out
+    # of the way so an available-update prompt cannot compete with it.
+    main_win.start_update_check()
+
     exit_code = app.exec_()
     log.info(f"Application event loop ended with exit code {exit_code}.")
 

@@ -1,6 +1,8 @@
 import sys
 import os
 import csv
+import tempfile
+from collections import OrderedDict
 import numpy as np
 from PyQt5.QtCore import (
     Qt,
@@ -10,6 +12,7 @@ from PyQt5.QtCore import (
     pyqtSignal,
     pyqtSlot,
     QRectF,
+    QEventLoop,
 )
 from PyQt5.QtGui import (
     QPixmap,
@@ -38,12 +41,23 @@ from PyQt5.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsItem,
+    QMessageBox,
+    QFrame,
+    QGridLayout,
+    QListWidget,
+    QSizePolicy,
 )
-from tifffile import TiffFile, imwrite
+from tifffile import TiffFile, TiffWriter
 from PIL import Image
 
-from utils.roi import normalized_roi_to_bounds
+from utils.roi import (
+    bounds_to_normalized_roi,
+    normalized_roi_to_bounds,
+    pixel_roi_to_bounds,
+)
 from utils.tiff_crop import CropCanceled, export_cropped_tiff
+from utils.recording_files import find_recording_csv_for_tiff
+from ui.style_constants import PANEL_STYLESHEET
 
 
 class OverlayItem(QGraphicsItem):
@@ -97,10 +111,10 @@ class OverlayItem(QGraphicsItem):
 
 
 class PlaybackLoader(QObject):
-    """Load TIFF/CSV data and emit frames as they are read."""
+    """Load only the playback index and first frame in a worker thread."""
 
     progress = pyqtSignal(int, int)
-    frame_loaded = pyqtSignal(int, np.ndarray, float, int)
+    loaded = pyqtSignal(object, object, int)
     finished = pyqtSignal(int)
     error = pyqtSignal(str)
 
@@ -131,15 +145,78 @@ class PlaybackLoader(QObject):
         try:
             with TiffFile(self.tiff_path) as tif:
                 total = len(tif.pages)
-                for idx, page in enumerate(tif.pages):
-                    frame = page.asarray()
-                    force = forces[idx] if idx < len(forces) else 0
-                    self.frame_loaded.emit(idx, frame, force, total)
-                    self.progress.emit(idx + 1, total)
+                if total == 0:
+                    raise ValueError("The TIFF does not contain any frames.")
+                first_frame = tif.pages[0].asarray()
+                self.loaded.emit(forces, first_frame, total)
+                self.progress.emit(total, total)
         except Exception as e:
             self.error.emit(str(e))
 
         self.finished.emit(total)
+
+
+class TiffFrameSequence:
+    """Random-access TIFF pages with a small, bounded in-memory cache."""
+
+    def __init__(
+        self,
+        path,
+        total,
+        first_frame=None,
+        cache_size=5,
+        cache_bytes=128 * 1024 * 1024,
+    ):
+        self.path = os.path.abspath(path)
+        self._tiff = TiffFile(self.path)
+        self._total = min(int(total), len(self._tiff.pages))
+        self._cache_size = max(1, int(cache_size))
+        self._cache_byte_limit = max(1, int(cache_bytes))
+        self._cached_bytes = 0
+        self._cache = OrderedDict()
+        if first_frame is not None and self._total:
+            self._cache[0] = first_frame
+            self._cached_bytes = int(first_frame.nbytes)
+
+    def __len__(self):
+        return self._total
+
+    def __bool__(self):
+        return self._total > 0
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(self._total))]
+        index = int(index)
+        if index < 0:
+            index += self._total
+        if not 0 <= index < self._total:
+            raise IndexError(index)
+        if index in self._cache:
+            frame = self._cache.pop(index)
+            self._cache[index] = frame
+            return frame
+
+        frame = self._tiff.pages[index].asarray()
+        self._cache[index] = frame
+        self._cached_bytes += int(frame.nbytes)
+        while len(self._cache) > 1 and (
+            len(self._cache) > self._cache_size
+            or self._cached_bytes > self._cache_byte_limit
+        ):
+            _, old_frame = self._cache.popitem(last=False)
+            self._cached_bytes -= int(old_frame.nbytes)
+        return frame
+
+    def __iter__(self):
+        for index in range(self._total):
+            yield self[index]
+
+    def clear(self):
+        self._cache.clear()
+        self._cached_bytes = 0
+        self._total = 0
+        self._tiff.close()
 
 
 class RoiStackExporter(QObject):
@@ -177,6 +254,49 @@ class RoiStackExporter(QObject):
             self.canceled.emit()
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+class BatchRoiStackExporter(QObject):
+    """Apply one source-pixel ROI to a sequence of TIFF recordings."""
+
+    progress = pyqtSignal(int, int)
+    finished = pyqtSignal(object, object)
+    canceled = pyqtSignal()
+
+    def __init__(self, jobs, bounds, parent=None):
+        super().__init__(parent)
+        self.jobs = list(jobs)
+        self.bounds = bounds
+        self._abort = False
+
+    def stop(self):
+        self._abort = True
+
+    @pyqtSlot()
+    def run(self):
+        completed = []
+        failures = []
+        total = len(self.jobs)
+        for index, (source_path, output_path, source_shape) in enumerate(self.jobs):
+            if self._abort:
+                self.canceled.emit()
+                return
+            try:
+                frame_count = export_cropped_tiff(
+                    source_path,
+                    output_path,
+                    self.bounds,
+                    source_shape,
+                    should_cancel=lambda: self._abort,
+                )
+                completed.append((output_path, frame_count))
+            except CropCanceled:
+                self.canceled.emit()
+                return
+            except Exception as exc:
+                failures.append((source_path, str(exc)))
+            self.progress.emit(index + 1, total)
+        self.finished.emit(completed, failures)
 
 
 class GraphicsImageView(QGraphicsView):
@@ -243,6 +363,44 @@ class GraphicsImageView(QGraphicsView):
         self._normalized_roi = None
         self.roi_changed.emit(QRectF())
 
+    def set_normalized_roi(self, roi):
+        """Display an ROI supplied in normalized image coordinates."""
+
+        if roi is None:
+            self.clear_roi()
+            return
+        image_rect = self.pixmap_item.boundingRect()
+        if image_rect.isEmpty():
+            return
+
+        left, top, right, bottom = (float(value) for value in roi)
+        rect = QRectF(
+            left * image_rect.width(),
+            top * image_rect.height(),
+            (right - left) * image_rect.width(),
+            (bottom - top) * image_rect.height(),
+        ).intersected(image_rect)
+        if rect.isEmpty():
+            self.clear_roi()
+            return
+
+        if self._roi_item is None:
+            self._roi_item = QGraphicsRectItem()
+            pen = QPen(Qt.red)
+            pen.setWidth(2)
+            pen.setCosmetic(True)
+            self._roi_item.setPen(pen)
+            self._roi_item.setZValue(2)
+            self.scene().addItem(self._roi_item)
+        self._roi_item.setRect(rect)
+        self._normalized_roi = (
+            rect.left() / image_rect.width(),
+            rect.top() / image_rect.height(),
+            rect.right() / image_rect.width(),
+            rect.bottom() / image_rect.height(),
+        )
+        self.roi_changed.emit(rect)
+
     def get_roi_rect(self):
         return self._roi_item.rect() if self._normalized_roi is not None else None
 
@@ -305,108 +463,33 @@ class GraphicsImageView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
 
-class FrameRenderer(QObject):
-    """Render frames in a background thread, optionally drawing overlay."""
-
-    progress = pyqtSignal(int, int)
-    finished = pyqtSignal(list)
-
-    def __init__(self, frames, forces, label_size, font_value, draw_overlay=True, parent=None):
-        super().__init__(parent)
-        self.frames = frames
-        self.forces = forces
-        self.label_w, self.label_h = label_size
-        self.font_value = font_value
-        self.draw_overlay = draw_overlay
-        self._abort = False
-        self.total_frames = len(frames)
-
-    def stop(self):
-        self._abort = True
-
-    @pyqtSlot()
-    def run(self):
-        images = []
-        total = len(self.frames)
-        for idx, frame in enumerate(self.frames):
-            if self._abort:
-                return
-            force = self.forces[min(idx, len(self.forces) - 1)]
-            img = self.render_image(idx, frame, force)
-            images.append(img)
-            self.progress.emit(idx + 1, total)
-        if not self._abort:
-            self.finished.emit(images)
-
-    def render_image(self, idx, frame, force):
-        frame_h, frame_w = frame.shape
-        scale = min(self.label_w / frame_w, self.label_h / frame_h)
-        disp_w = max(1, int(frame_w * scale))
-        disp_h = max(1, int(frame_h * scale))
-
-        qimg = QImage(
-            frame.data, frame_w, frame_h, frame.strides[0], QImage.Format_Grayscale8
-        )
-        qimg = qimg.scaled(disp_w, disp_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        qimg = qimg.convertToFormat(QImage.Format_Grayscale8)
-
-        painter = QPainter(qimg)
-        painter.setRenderHints(QPainter.Antialiasing | QPainter.TextAntialiasing)
-
-        if self.draw_overlay:
-            scale_factor = disp_h / 500
-            font_size = int(self.font_value * scale_factor)
-            font = QFont("Arial", font_size)
-            painter.setFont(font)
-
-            text = f"{force:.2f} mN"
-            metrics = QFontMetrics(font)
-            x = 10
-            y = disp_h - metrics.descent() - 10
-
-            path = QPainterPath()
-            path.addText(x, y, font, text)
-            painter.setPen(QPen(Qt.black, 2))
-            painter.drawPath(path)
-            painter.fillPath(path, Qt.white)
-
-            # frame count in top-left corner
-            frame_text = f"{idx + 1}/{self.total_frames}"
-            f_metrics = QFontMetrics(font)
-            fx = 10
-            fy = f_metrics.ascent() + 10
-            frame_path = QPainterPath()
-            frame_path.addText(fx, fy, font, frame_text)
-            painter.drawPath(frame_path)
-            painter.fillPath(frame_path, Qt.white)
-        painter.end()
-
-        return qimg.copy()
-
-
 class PlaybackWindow(QMainWindow):
     """Display a TIFF stack with optional force overlay and playback controls."""
 
     def __init__(self, tiff_path=None, csv_path=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Playback")
-        self.resize(800, 600)
+        self.resize(1200, 800)
 
         self.frames = []
         self.forces = []
-        self.pre_rendered_frames = []
+        self._pixmap_cache = OrderedDict()
+        self._pixmap_cache_size = 12
         self.loader_thread = None
         self.loader = None
-        self.render_thread = None
-        self.renderer = None
         self.crop_thread = None
         self.crop_worker = None
         self.tiff_path = None
         self.csv_path = None
         self._crop_active = False
+        self._batch_skipped = []
+        self._batch_source_paths = []
         self.current_frame = 0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.next_frame)
+        self.resize_render_timer = QTimer(self)
+        self.resize_render_timer.setSingleShot(True)
+        self.resize_render_timer.timeout.connect(self.regenerate_frames)
 
         # ─── Widgets ──────────────────────────────────────────────────────
         self.view = GraphicsImageView()
@@ -418,66 +501,186 @@ class PlaybackWindow(QMainWindow):
         self.crop_progress.setVisible(False)
         self.play_btn = QPushButton("\u25b6 Play")
         self.play_btn.setCheckable(True)
+        self.play_btn.setProperty("cssClass", "primary")
         self.slider = QSlider(Qt.Horizontal)
+        self.slider.setProperty("cssClass", "controlSlider")
+        self.slider.setTracking(False)
         self.slider.setEnabled(False)
         self.frame_label = QLabel("0/0")
 
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 1000)
         self.fps_spin.setValue(10)
+        self.fps_spin.setProperty("cssClass", "monoInput")
         self.fps_spin.valueChanged.connect(self.update_fps)
 
         self.font_spin = QSpinBox()
         self.font_spin.setRange(10, 200)
         self.font_spin.setValue(10)
+        self.font_spin.setProperty("cssClass", "monoInput")
         self.font_spin.valueChanged.connect(self._update_overlay)
 
         self.overlay_cb = QCheckBox("Show Overlay")
+        self.overlay_cb.setProperty("cssClass", "muted")
         self.overlay_cb.setChecked(True)
         self.overlay_cb.toggled.connect(self._update_overlay)
 
         self.roi_btn = QPushButton("Draw ROI")
         self.roi_btn.setObjectName("roiDrawButton")
         self.roi_btn.setCheckable(True)
+        self.roi_btn.setProperty("cssClass", "primary")
         self.roi_btn.setToolTip("Select, then drag over the image to define a crop")
-        self.zoom_roi_btn = QPushButton("Zoom ROI")
+        self.clear_roi_btn = QPushButton("Clear ROI")
+        self.clear_roi_btn.setProperty("cssClass", "ghost")
+        self.roi_x_spin = QSpinBox()
+        self.roi_y_spin = QSpinBox()
+        self.roi_width_spin = QSpinBox()
+        self.roi_height_spin = QSpinBox()
+        for spin in (
+            self.roi_x_spin,
+            self.roi_y_spin,
+            self.roi_width_spin,
+            self.roi_height_spin,
+        ):
+            spin.setSuffix(" px")
+            spin.setMinimumWidth(82)
+            spin.setEnabled(False)
+            spin.setProperty("cssClass", "monoInput")
+        self.roi_x_spin.setRange(0, 0)
+        self.roi_y_spin.setRange(0, 0)
+        self.roi_width_spin.setRange(1, 1)
+        self.roi_height_spin.setRange(1, 1)
+        self.apply_roi_btn = QPushButton("Apply ROI")
+        self.apply_roi_btn.setProperty("cssClass", "ghost")
+        self.apply_roi_btn.setToolTip(
+            "Apply these exact source-pixel coordinates to the ROI"
+        )
         self.export_roi_btn = QPushButton("Export ROI PNG")
+        self.export_roi_btn.setProperty("cssClass", "ghost")
         self.export_roi_stack_btn = QPushButton("Export Cropped TIFF")
+        self.export_roi_stack_btn.setProperty("cssClass", "primary")
         self.export_roi_stack_btn.setToolTip(
             "Crop this ROI from every frame into a new TIFF stack"
         )
+        self.batch_export_roi_stack_btn = QPushButton("Crop Selected TIFFs")
+        self.batch_export_roi_stack_btn.setProperty("cssClass", "primary")
+        self.batch_export_roi_stack_btn.setToolTip(
+            "Apply these exact ROI coordinates to multiple TIFF recordings"
+        )
 
         self.export_btn = QPushButton("💾 Export Overlay TIFF")
+        self.export_btn.setProperty("cssClass", "primary")
         self.snapshot_btn = QPushButton("🖼 Export Frame PNG")
+        self.snapshot_btn.setProperty("cssClass", "ghost")
 
-        controls_layout = QHBoxLayout()
-        controls_layout.setContentsMargins(4, 4, 4, 4)
-        controls_layout.setSpacing(6)
+        self.select_batch_tiffs_btn = QPushButton("Add TIFFs…")
+        self.select_batch_tiffs_btn.setProperty("cssClass", "ghost")
+        self.select_batch_tiffs_btn.setToolTip(
+            "Add recordings to the shared-ROI batch queue (maximum 5)"
+        )
+        self.clear_batch_tiffs_btn = QPushButton("Clear List")
+        self.clear_batch_tiffs_btn.setProperty("cssClass", "ghost")
+        self.batch_selection_label = QLabel("0 of 5 TIFFs selected")
+        self.batch_selection_label.setProperty("cssClass", "detailLabel")
+        self.batch_file_list = QListWidget()
+        self.batch_file_list.setProperty("cssClass", "batchList")
+        self.batch_file_list.setMaximumHeight(82)
+        self.batch_file_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.batch_file_list.setToolTip("Double-click a recording to remove it")
+
+        scrubber_card = QFrame()
+        scrubber_card.setProperty("cssClass", "panelCard")
+        controls_layout = QHBoxLayout(scrubber_card)
+        controls_layout.setContentsMargins(10, 8, 10, 8)
+        controls_layout.setSpacing(10)
         controls_layout.addWidget(self.play_btn)
         controls_layout.addWidget(self.slider, stretch=1)
         controls_layout.addWidget(self.frame_label)
 
-        options_layout = QHBoxLayout()
-        options_layout.setContentsMargins(4, 0, 4, 4)
-        options_layout.setSpacing(6)
-        options_layout.addWidget(QLabel("FPS:"))
-        options_layout.addWidget(self.fps_spin)
-        options_layout.addWidget(QLabel("Font:"))
-        options_layout.addWidget(self.font_spin)
-        options_layout.addWidget(self.overlay_cb)
-        options_layout.addStretch(1)
-        options_layout.addWidget(self.snapshot_btn)
-        options_layout.addWidget(self.export_btn)
+        playback_card = QFrame()
+        playback_card.setProperty("cssClass", "panelCard")
+        playback_layout = QVBoxLayout(playback_card)
+        playback_layout.setContentsMargins(12, 10, 12, 10)
+        playback_layout.setSpacing(8)
+        playback_title = QLabel("Playback & Export")
+        playback_title.setProperty("cssClass", "panelTitle")
+        playback_layout.addWidget(playback_title)
+        options_grid = QGridLayout()
+        options_grid.setHorizontalSpacing(8)
+        options_grid.setVerticalSpacing(6)
+        options_grid.addWidget(QLabel("Playback FPS"), 0, 0)
+        options_grid.addWidget(self.fps_spin, 0, 1)
+        options_grid.addWidget(QLabel("Overlay Font"), 1, 0)
+        options_grid.addWidget(self.font_spin, 1, 1)
+        options_grid.addWidget(self.overlay_cb, 2, 0, 1, 2)
+        playback_layout.addLayout(options_grid)
+        playback_actions = QHBoxLayout()
+        playback_actions.addWidget(self.snapshot_btn)
+        playback_actions.addWidget(self.export_btn)
+        playback_layout.addLayout(playback_actions)
 
-        roi_layout = QHBoxLayout()
-        roi_layout.setContentsMargins(4, 0, 4, 4)
-        roi_layout.setSpacing(6)
-        roi_layout.addWidget(QLabel("ROI:"))
-        roi_layout.addWidget(self.roi_btn)
-        roi_layout.addWidget(self.zoom_roi_btn)
-        roi_layout.addStretch(1)
-        roi_layout.addWidget(self.export_roi_btn)
-        roi_layout.addWidget(self.export_roi_stack_btn)
+        roi_card = QFrame()
+        roi_card.setProperty("cssClass", "panelCard")
+        roi_card_layout = QVBoxLayout(roi_card)
+        roi_card_layout.setContentsMargins(12, 10, 12, 10)
+        roi_card_layout.setSpacing(8)
+        roi_header = QHBoxLayout()
+        roi_title = QLabel("Shared ROI")
+        roi_title.setProperty("cssClass", "panelTitle")
+        roi_header.addWidget(roi_title)
+        roi_header.addStretch()
+        roi_hint = QLabel("Source-pixel coordinates")
+        roi_hint.setProperty("cssClass", "detailLabel")
+        roi_header.addWidget(roi_hint)
+        roi_card_layout.addLayout(roi_header)
+        roi_actions = QHBoxLayout()
+        roi_actions.setSpacing(6)
+        roi_actions.addWidget(self.roi_btn)
+        roi_actions.addWidget(self.clear_roi_btn)
+        roi_actions.addStretch()
+        roi_card_layout.addLayout(roi_actions)
+        roi_grid = QGridLayout()
+        roi_grid.setHorizontalSpacing(6)
+        for column, (label_text, spin) in enumerate(
+            (("X", self.roi_x_spin), ("Y", self.roi_y_spin),
+             ("Width", self.roi_width_spin), ("Height", self.roi_height_spin))
+        ):
+            roi_grid.addWidget(QLabel(label_text), 0, column)
+            roi_grid.addWidget(spin, 1, column)
+        roi_grid.addWidget(self.apply_roi_btn, 1, 4)
+        roi_card_layout.addLayout(roi_grid)
+        roi_exports = QHBoxLayout()
+        roi_exports.addStretch()
+        roi_exports.addWidget(self.export_roi_btn)
+        roi_exports.addWidget(self.export_roi_stack_btn)
+        roi_card_layout.addLayout(roi_exports)
+
+        batch_card = QFrame()
+        batch_card.setProperty("cssClass", "panelCard")
+        batch_layout = QVBoxLayout(batch_card)
+        batch_layout.setContentsMargins(12, 10, 12, 10)
+        batch_layout.setSpacing(8)
+        batch_header = QHBoxLayout()
+        batch_title = QLabel("Batch Crop")
+        batch_title.setProperty("cssClass", "panelTitle")
+        batch_header.addWidget(batch_title)
+        batch_header.addStretch()
+        batch_header.addWidget(self.batch_selection_label)
+        batch_layout.addLayout(batch_header)
+        batch_layout.addWidget(self.batch_file_list)
+        batch_actions = QHBoxLayout()
+        batch_actions.addWidget(self.select_batch_tiffs_btn)
+        batch_actions.addWidget(self.clear_batch_tiffs_btn)
+        batch_actions.addStretch()
+        batch_actions.addWidget(self.batch_export_roi_stack_btn)
+        batch_layout.addLayout(batch_actions)
+
+        tool_cards_layout = QHBoxLayout()
+        tool_cards_layout.setContentsMargins(0, 0, 0, 0)
+        tool_cards_layout.setSpacing(8)
+        tool_cards_layout.addWidget(playback_card, 2)
+        tool_cards_layout.addWidget(roi_card, 4)
+        tool_cards_layout.addWidget(batch_card, 3)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
@@ -485,9 +688,8 @@ class PlaybackWindow(QMainWindow):
         layout.addWidget(self.view, stretch=1)
         layout.addWidget(self.progress)
         layout.addWidget(self.crop_progress)
-        layout.addLayout(controls_layout)
-        layout.addLayout(options_layout)
-        layout.addLayout(roi_layout)
+        layout.addWidget(scrubber_card)
+        layout.addLayout(tool_cards_layout)
 
         container = QWidget()
         container.setLayout(layout)
@@ -499,34 +701,55 @@ class PlaybackWindow(QMainWindow):
         self.export_btn.clicked.connect(self.export_overlay)
         self.snapshot_btn.clicked.connect(self.export_snapshot)
         self.roi_btn.toggled.connect(self.toggle_roi_mode)
-        self.zoom_roi_btn.clicked.connect(self.zoom_to_roi)
+        self.clear_roi_btn.clicked.connect(self.clear_roi)
+        self.apply_roi_btn.clicked.connect(self.apply_manual_roi)
         self.export_roi_btn.clicked.connect(self.export_roi)
         self.export_roi_stack_btn.clicked.connect(self.export_roi_stack)
+        self.batch_export_roi_stack_btn.clicked.connect(self.export_roi_stack_batch)
+        self.select_batch_tiffs_btn.clicked.connect(self.select_batch_tiffs)
+        self.clear_batch_tiffs_btn.clicked.connect(self.clear_batch_tiffs)
+        self.batch_file_list.itemDoubleClicked.connect(self._remove_batch_item)
         self.view.roi_changed.connect(self._on_roi_changed)
         self.view.roi_finished.connect(self._finish_roi_drawing)
 
-        self.zoom_roi_btn.setEnabled(False)
+        self.clear_roi_btn.setEnabled(False)
+        self.apply_roi_btn.setEnabled(False)
         self.export_roi_btn.setEnabled(False)
         self.export_roi_stack_btn.setEnabled(False)
+        self.batch_export_roi_stack_btn.setEnabled(False)
+        self.clear_batch_tiffs_btn.setEnabled(False)
+        self.setStyleSheet(PANEL_STYLESHEET)
 
-        if tiff_path and csv_path:
-            self.load_files(tiff_path, csv_path)
+        if tiff_path:
+            resolved_csv = csv_path or find_recording_csv_for_tiff(tiff_path)
+            if resolved_csv:
+                self.load_files(tiff_path, resolved_csv)
+            else:
+                self._show_missing_pair(tiff_path)
         else:
             self.pick_files()
 
     # ─── File Loading ─────────────────────────────────────────────────────
     def pick_files(self):
         tiff, _ = QFileDialog.getOpenFileName(
-            self, "Select TIFF", "", "TIFF files (*.tif *.tiff)"
+            self, "Open BURST TIFF Recording", "", "TIFF files (*.tif *.tiff)"
         )
         if not tiff:
             return
-        csv_path, _ = QFileDialog.getOpenFileName(
-            self, "Select CSV", "", "CSV files (*.csv)"
-        )
+        csv_path = find_recording_csv_for_tiff(tiff)
         if not csv_path:
+            self._show_missing_pair(tiff)
             return
         self.load_files(tiff, csv_path)
+
+    def _show_missing_pair(self, tiff_path):
+        QMessageBox.warning(
+            self,
+            "Paired CSV Not Found",
+            "BURST could not identify the synchronized CSV beside:\n\n"
+            f"{os.path.basename(tiff_path)}\n\n"
+            "Keep the matching *_force.csv in the same folder as the *_video.tif.",
+        )
 
     def load_files(self, tiff_path, csv_path):
         # Show progress bar and start worker thread to avoid blocking UI
@@ -536,49 +759,117 @@ class PlaybackWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.WaitCursor)
 
         self.frames.clear()
-        self.pre_rendered_frames.clear()
+        self.frames = []
+        self._pixmap_cache.clear()
         self.forces.clear()
         self.view.clear_roi()
         self.tiff_path = os.path.abspath(tiff_path)
         self.csv_path = os.path.abspath(csv_path)
+        self._set_batch_sources([self.tiff_path])
 
         self.loader_thread = QThread(self)
         self.loader = PlaybackLoader(tiff_path, csv_path)
         self.loader.moveToThread(self.loader_thread)
         self.loader_thread.started.connect(self.loader.run)
         self.loader.progress.connect(self._update_progress)
-        self.loader.frame_loaded.connect(self._on_frame_loaded)
+        self.loader.loaded.connect(self._on_playback_loaded)
         self.loader.finished.connect(self._loading_finished)
         self.loader.error.connect(self._show_error)
         self.loader.finished.connect(self.loader_thread.quit)
         self.loader_thread.finished.connect(self.loader.deleteLater)
+        self.loader_thread.finished.connect(self._loader_thread_finished)
         self.loader_thread.finished.connect(self.loader_thread.deleteLater)
         self.loader_thread.start()
+
+    def _loader_thread_finished(self):
+        self.loader = None
+        self.loader_thread = None
+
+    def _set_batch_sources(self, paths):
+        """Replace the visible batch queue with up to five unique TIFF files."""
+
+        unique_paths = []
+        seen = set()
+        for path in paths:
+            absolute = os.path.abspath(path)
+            if not absolute.lower().endswith((".tif", ".tiff")):
+                continue
+            key = os.path.normcase(os.path.realpath(absolute))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_paths.append(absolute)
+
+        overflow = max(0, len(unique_paths) - 5)
+        self._batch_source_paths = unique_paths[:5]
+        self.batch_file_list.clear()
+        for path in self._batch_source_paths:
+            self.batch_file_list.addItem(os.path.basename(path))
+            self.batch_file_list.item(self.batch_file_list.count() - 1).setToolTip(path)
+        count = len(self._batch_source_paths)
+        self.batch_selection_label.setText(f"{count} of 5 TIFFs selected")
+        self.batch_file_list.setToolTip("\n".join(self._batch_source_paths))
+        self.clear_batch_tiffs_btn.setEnabled(bool(count) and not self._crop_is_running())
+        self._refresh_roi_controls()
+        return overflow
+
+    def select_batch_tiffs(self):
+        """Add TIFF recordings to the shared-ROI queue, capped at five."""
+
+        start_dir = os.path.dirname(self.tiff_path) if self.tiff_path else ""
+        source_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add TIFF Recordings for Shared-ROI Batch Crop (Maximum 5)",
+            start_dir,
+            "TIFF files (*.tif *.tiff)",
+        )
+        if not source_paths:
+            return False
+        overflow = self._set_batch_sources(self._batch_source_paths + source_paths)
+        if overflow:
+            QMessageBox.information(
+                self,
+                "Five-File Limit",
+                f"The first five unique TIFF recordings were kept; {overflow} additional file(s) were not added.",
+            )
+        return True
+
+    def clear_batch_tiffs(self):
+        self._set_batch_sources([])
+
+    def _remove_batch_item(self, item):
+        row = self.batch_file_list.row(item)
+        if 0 <= row < len(self._batch_source_paths):
+            paths = list(self._batch_source_paths)
+            paths.pop(row)
+            self._set_batch_sources(paths)
 
     def _update_progress(self, current, total):
         self.progress.setMaximum(total)
         self.progress.setValue(current)
 
-    def _on_frame_loaded(self, idx, frame, force, total_frames):
-        self.frames.append(frame)
-        self.forces.append(force)
-        pix = self.render_pixmap(frame, force, idx, total_frames)
-        self.pre_rendered_frames.append(pix)
-        if idx == 0:
-            self.current_frame = 0
-            self.slider.setEnabled(True)
-            self.play_btn.setEnabled(True)
-            self._refresh_roi_controls()
-        if self.slider.maximum() != len(self.frames) - 1:
-            self.slider.setRange(0, max(0, len(self.frames) - 1))
-        if idx == 0:
-            self.show_frame()
+    def _on_playback_loaded(self, forces, first_frame, total_frames):
+        self.frames = TiffFrameSequence(
+            self.tiff_path,
+            total_frames,
+            first_frame=first_frame,
+        )
+        self.forces = list(forces[:total_frames])
+        if len(self.forces) < total_frames:
+            self.forces.extend([0.0] * (total_frames - len(self.forces)))
+        self.current_frame = 0
+        self.slider.setRange(0, max(0, total_frames - 1))
+        self.slider.setEnabled(True)
+        self.play_btn.setEnabled(True)
+        self._configure_roi_fields(first_frame.shape)
+        self._refresh_roi_controls()
+        self.show_frame()
 
     def _loading_finished(self, _total_frames):
         QApplication.restoreOverrideCursor()
         self.statusBar().clearMessage()
         self.progress.setVisible(False)
-        if self.pre_rendered_frames:
+        if self.frames:
             self.show_frame()
         self.slider.setEnabled(bool(self.frames))
         self.play_btn.setEnabled(bool(self.frames))
@@ -647,7 +938,8 @@ class PlaybackWindow(QMainWindow):
 
     def render_pixmap(self, frame, force, frame_idx=None, total_frames=None):
         """Return a scaled :class:`QPixmap` of ``frame``."""
-        label_w, label_h = max(1, self.view.viewport().width()), max(1, self.view.viewport().height())
+        label_w = max(1, self.view.viewport().width())
+        label_h = max(1, self.view.viewport().height())
         frame_h, frame_w = frame.shape
         scale = min(label_w / frame_w, label_h / frame_h)
         disp_w = max(1, int(frame_w * scale))
@@ -661,71 +953,33 @@ class PlaybackWindow(QMainWindow):
 
         return QPixmap.fromImage(qimg)
 
-    def pre_render_frames_async(self):
-        """Asynchronously pre-render frames for smooth playback."""
+    def regenerate_frames(self):
+        """Invalidate scaled previews and redraw only the current frame."""
+        self._pixmap_cache.clear()
+        if self.frames:
+            self.show_frame()
+
+    def show_frame(self):
         if not self.frames:
             return
-
-        # If a previous rendering thread exists, ensure it has fully
-        # stopped before starting another. ``render_thread`` may already
-        # have been deleted via ``deleteLater`` so guard against calling
-        # methods on a dead QObject.
-        if self.render_thread:
-            try:
-                if self.render_thread.isRunning():
-                    self.renderer.stop()
-                    self.render_thread.quit()
-                    self.render_thread.wait()
-            except RuntimeError:
-                # The underlying C++ object was destroyed; reset refs.
-                self.render_thread = None
-                self.renderer = None
-
-        self.progress.setVisible(True)
-        self.progress.setValue(0)
-
-        label_size = (
+        viewport_size = (
             max(1, self.view.viewport().width()),
             max(1, self.view.viewport().height()),
         )
-        font_value = self.font_spin.value()
-
-        self.render_thread = QThread(self)
-        self.renderer = FrameRenderer(
-            self.frames,
-            self.forces or [0] * len(self.frames),
-            label_size,
-            font_value,
-            False,
-        )
-        self.renderer.moveToThread(self.render_thread)
-        self.render_thread.started.connect(self.renderer.run)
-        self.renderer.progress.connect(self._update_progress)
-        self.renderer.finished.connect(self._rendering_finished)
-        self.renderer.finished.connect(self.render_thread.quit)
-        self.render_thread.finished.connect(self.renderer.deleteLater)
-        self.render_thread.finished.connect(self.render_thread.deleteLater)
-        self.render_thread.start()
-
-    def regenerate_frames(self):
-        """Re-render frames and update the current display."""
-        self.pre_render_frames_async()
-
-    def _rendering_finished(self, images):
-        self.pre_rendered_frames = [QPixmap.fromImage(img) for img in images]
-        self.progress.setVisible(False)
-        self.slider.setEnabled(True)
-        self.play_btn.setEnabled(True)
-        # Rendering thread is finished; clear references so future checks
-        # don't try to access a deleted QObject.
-        self.render_thread = None
-        self.renderer = None
-        self.show_frame()
-
-    def show_frame(self):
-        if not self.pre_rendered_frames:
-            return
-        pixmap = self.pre_rendered_frames[self.current_frame]
+        cache_key = (self.current_frame,) + viewport_size
+        pixmap = self._pixmap_cache.pop(cache_key, None)
+        if pixmap is None:
+            frame = self.frames[self.current_frame]
+            force = self.forces[self.current_frame]
+            pixmap = self.render_pixmap(
+                frame,
+                force,
+                self.current_frame,
+                len(self.frames),
+            )
+        self._pixmap_cache[cache_key] = pixmap
+        while len(self._pixmap_cache) > self._pixmap_cache_size:
+            self._pixmap_cache.popitem(last=False)
         self.view.set_pixmap(pixmap)
         if self.slider.maximum() != len(self.frames) - 1:
             self.slider.setRange(0, max(0, len(self.frames) - 1))
@@ -733,10 +987,14 @@ class PlaybackWindow(QMainWindow):
         self.slider.setValue(self.current_frame)
         self.slider.blockSignals(False)
         self.frame_label.setText(f"{self.current_frame + 1}/{len(self.frames)}")
-        force = self.forces[min(self.current_frame, len(self.forces) - 1)]
+        force = self.forces[self.current_frame]
         scale_factor = pixmap.height() / 500
         font_size = int(self.font_spin.value() * scale_factor)
-        frame_text = f"{self.current_frame + 1}/{len(self.frames)}" if self.overlay_cb.isChecked() else ""
+        frame_text = (
+            f"{self.current_frame + 1}/{len(self.frames)}"
+            if self.overlay_cb.isChecked()
+            else ""
+        )
         self.view.update_overlay(
             force,
             frame_text,
@@ -745,7 +1003,7 @@ class PlaybackWindow(QMainWindow):
         )
 
     def _update_overlay(self):
-        if self.pre_rendered_frames:
+        if self.frames:
             self.show_frame()
 
     # ─── Controls ─────────────────────────────────────────────────────────
@@ -779,28 +1037,73 @@ class PlaybackWindow(QMainWindow):
         )
         if not out_path:
             return
+        if not out_path.lower().endswith((".tif", ".tiff")):
+            out_path += ".tif"
+        if self.tiff_path and os.path.normcase(
+            os.path.realpath(out_path)
+        ) == os.path.normcase(os.path.realpath(self.tiff_path)):
+            self.statusBar().showMessage(
+                "Choose a different filename to preserve the original recording",
+                5000,
+            )
+            return
+
         self.statusBar().showMessage("Exporting overlay...")
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.export_btn.setEnabled(False)
         base_font = self.font_spin.value()
         preview_size = (
             max(1, self.view.viewport().width()),
             max(1, self.view.viewport().height()),
         )
         total = len(self.frames)
-        overlaid_frames = [
-            self.overlay_frame(
-                f,
-                p,
-                base_font,
-                idx,
-                total,
-                preview_size=preview_size,
+        self.progress.setFormat("Exporting frame %v of %m")
+        self.progress.setRange(0, total)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.progress.setVisible(True)
+        output_dir = os.path.dirname(os.path.abspath(out_path))
+        temp_path = None
+        try:
+            temp_file = tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=".burst-overlay-",
+                suffix=".tif",
+                dir=output_dir,
+                delete=False,
             )
-            for idx, (f, p) in enumerate(zip(self.frames, self.forces))
-        ]
-        imwrite(out_path, np.array(overlaid_frames), photometric="minisblack")
-        QApplication.restoreOverrideCursor()
-        self.statusBar().showMessage(f"Saved: {os.path.basename(out_path)}", 3000)
+            temp_path = temp_file.name
+            temp_file.close()
+            with TiffWriter(temp_path, bigtiff=True) as output_tiff:
+                for idx, (frame, force) in enumerate(zip(self.frames, self.forces)):
+                    overlaid = self.overlay_frame(
+                        frame,
+                        force,
+                        base_font,
+                        idx,
+                        total,
+                        preview_size=preview_size,
+                    )
+                    output_tiff.write(overlaid, photometric="minisblack")
+                    self.progress.setValue(idx + 1)
+                    QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+            os.replace(temp_path, out_path)
+            temp_path = None
+            self.statusBar().showMessage(
+                f"Saved: {os.path.basename(out_path)}", 3000
+            )
+        except Exception as exc:
+            self.statusBar().showMessage(f"Overlay export failed: {exc}", 8000)
+        finally:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            QApplication.restoreOverrideCursor()
+            self.export_btn.setEnabled(True)
+            self.progress.setVisible(False)
+            self.progress.setTextVisible(False)
 
     def export_snapshot(self):
         if not self.frames:
@@ -835,6 +1138,59 @@ class PlaybackWindow(QMainWindow):
         )
 
     # ─── ROI Helpers ─────────────────────────────────────────────────────
+    def _configure_roi_fields(self, frame_shape):
+        frame_height, frame_width = int(frame_shape[0]), int(frame_shape[1])
+        self.roi_x_spin.setRange(0, max(0, frame_width - 1))
+        self.roi_y_spin.setRange(0, max(0, frame_height - 1))
+        self.roi_width_spin.setRange(1, max(1, frame_width))
+        self.roi_height_spin.setRange(1, max(1, frame_height))
+        self.roi_x_spin.setValue(0)
+        self.roi_y_spin.setValue(0)
+        self.roi_width_spin.setValue(max(1, frame_width))
+        self.roi_height_spin.setValue(max(1, frame_height))
+
+    def _update_roi_fields(self, bounds):
+        if bounds is None:
+            return
+        x0, y0, x1, y1 = bounds
+        self.roi_x_spin.setValue(x0)
+        self.roi_y_spin.setValue(y0)
+        self.roi_width_spin.setValue(x1 - x0)
+        self.roi_height_spin.setValue(y1 - y0)
+
+    def apply_manual_roi(self):
+        if not self.frames:
+            return
+        try:
+            bounds = pixel_roi_to_bounds(
+                self.roi_x_spin.value(),
+                self.roi_y_spin.value(),
+                self.roi_width_spin.value(),
+                self.roi_height_spin.value(),
+                self.frames[self.current_frame].shape,
+            )
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc), 5000)
+            return
+
+        normalized = bounds_to_normalized_roi(
+            bounds,
+            self.frames[self.current_frame].shape,
+        )
+        self.view.set_normalized_roi(normalized)
+        self.roi_btn.setChecked(False)
+        x0, y0, x1, y1 = bounds
+        self.statusBar().showMessage(
+            f"ROI applied: {x1 - x0}×{y1 - y0} px at ({x0}, {y0})"
+        )
+
+    def clear_roi(self):
+        self.roi_btn.setChecked(False)
+        self.view.clear_roi()
+        self.statusBar().showMessage(
+            "ROI cleared; the pixel values are retained for reuse", 3000
+        )
+
     def toggle_roi_mode(self, checked: bool):
         self.view.enable_roi(checked)
         self.roi_btn.setText("Cancel ROI" if checked else "Draw ROI")
@@ -882,24 +1238,35 @@ class PlaybackWindow(QMainWindow):
     def _refresh_roi_controls(self):
         has_roi = self._roi_frame_bounds() is not None
         busy = self._crop_is_running()
-        self.roi_btn.setEnabled(bool(self.frames) and not busy)
-        self.zoom_roi_btn.setEnabled(has_roi and not busy)
+        has_frames = bool(self.frames)
+        self.roi_btn.setEnabled(has_frames and not busy)
+        self.clear_roi_btn.setEnabled(has_roi and not busy)
+        self.apply_roi_btn.setEnabled(has_frames and not busy)
+        for spin in (
+            self.roi_x_spin,
+            self.roi_y_spin,
+            self.roi_width_spin,
+            self.roi_height_spin,
+        ):
+            spin.setEnabled(has_frames and not busy)
         self.export_roi_btn.setEnabled(has_roi and not busy)
         self.export_roi_stack_btn.setEnabled(has_roi and not busy)
+        # Keep this available with a valid ROI: an empty queue is populated by
+        # the capped five-TIFF picker when the user clicks the action.
+        self.batch_export_roi_stack_btn.setEnabled(has_roi and not busy)
+        self.select_batch_tiffs_btn.setEnabled(not busy and len(self._batch_source_paths) < 5)
+        self.clear_batch_tiffs_btn.setEnabled(bool(self._batch_source_paths) and not busy)
+        self.batch_file_list.setEnabled(not busy)
 
     def _on_roi_changed(self, _rect):
         self._refresh_roi_controls()
         bounds = self._roi_frame_bounds()
         if bounds is not None:
+            self._update_roi_fields(bounds)
             x0, y0, x1, y1 = bounds
             self.statusBar().showMessage(
                 f"ROI: {x1 - x0}\u00d7{y1 - y0} px at ({x0}, {y0})"
             )
-
-    def zoom_to_roi(self):
-        rect = self.view.get_roi_rect()
-        if rect:
-            self.view.fitInView(rect, Qt.KeepAspectRatio)
 
     def export_roi(self):
         bounds = self._roi_frame_bounds()
@@ -1002,6 +1369,113 @@ class PlaybackWindow(QMainWindow):
         self.crop_thread.start()
         self._refresh_roi_controls()
 
+    def export_roi_stack_batch(self):
+        """Crop selected recordings with the exact current source-pixel ROI."""
+
+        bounds = self._roi_frame_bounds()
+        if bounds is None or self._crop_is_running():
+            self.statusBar().showMessage("Draw or apply an ROI first", 2000)
+            return
+
+        source_paths = list(self._batch_source_paths[:5])
+        if not source_paths:
+            if not self.select_batch_tiffs():
+                return
+            source_paths = list(self._batch_source_paths[:5])
+
+        jobs = []
+        skipped = []
+        seen = set()
+        x0, y0, x1, y1 = bounds
+        for source_path in source_paths:
+            source_path = os.path.abspath(source_path)
+            source_key = os.path.normcase(os.path.realpath(source_path))
+            if source_key in seen:
+                continue
+            seen.add(source_key)
+
+            source_stem, _ = os.path.splitext(source_path)
+            output_path = f"{source_stem}_cropped.tif"
+            if os.path.exists(output_path):
+                skipped.append(
+                    (source_path, f"{os.path.basename(output_path)} already exists")
+                )
+                continue
+
+            try:
+                with TiffFile(source_path) as source_tiff:
+                    if not source_tiff.pages:
+                        raise ValueError("TIFF contains no frames")
+                    source_shape = tuple(source_tiff.pages[0].shape)
+                if len(source_shape) != 2:
+                    raise ValueError("only grayscale TIFF frames are supported")
+                pixel_roi_to_bounds(
+                    x0,
+                    y0,
+                    x1 - x0,
+                    y1 - y0,
+                    source_shape,
+                )
+            except Exception as exc:
+                skipped.append((source_path, str(exc)))
+                continue
+            jobs.append((source_path, output_path, source_shape))
+
+        self._batch_skipped = skipped
+        if not jobs:
+            self.statusBar().showMessage(
+                f"No files queued; {len(skipped)} file(s) skipped. "
+                "Existing cropped TIFFs were not overwritten.",
+                8000,
+            )
+            return
+
+        self.crop_progress.setFormat("Cropping file %v of %m")
+        self.crop_progress.setRange(0, len(jobs))
+        self.crop_progress.setValue(0)
+        self.crop_progress.setVisible(True)
+        self.statusBar().showMessage(
+            f"Batch cropping {len(jobs)} TIFF recording(s) with "
+            f"ROI {x1 - x0}×{y1 - y0} at ({x0}, {y0})..."
+        )
+        self.roi_btn.setChecked(False)
+
+        self.crop_thread = QThread(self)
+        self.crop_worker = BatchRoiStackExporter(jobs, bounds)
+        self.crop_worker.moveToThread(self.crop_thread)
+        self.crop_thread.started.connect(self.crop_worker.run)
+        self.crop_worker.progress.connect(self._update_crop_progress)
+        self.crop_worker.finished.connect(self._batch_crop_finished)
+        self.crop_worker.canceled.connect(self._crop_canceled)
+        self.crop_worker.finished.connect(self.crop_thread.quit)
+        self.crop_worker.canceled.connect(self.crop_thread.quit)
+        self.crop_thread.finished.connect(self.crop_worker.deleteLater)
+        self.crop_thread.finished.connect(self._crop_thread_finished)
+        self.crop_thread.finished.connect(self.crop_thread.deleteLater)
+        self._crop_active = True
+        self.crop_thread.start()
+        self._refresh_roi_controls()
+
+    def _batch_crop_finished(self, completed, failures):
+        skipped_count = len(self._batch_skipped)
+        failed_count = len(failures)
+        self.statusBar().showMessage(
+            f"Batch crop complete: {len(completed)} saved, "
+            f"{skipped_count} skipped, {failed_count} failed. "
+            "Original TIFFs were unchanged.",
+            10000,
+        )
+        if failures:
+            details = "\n".join(
+                f"{os.path.basename(path)}: {message}"
+                for path, message in failures[:8]
+            )
+            QMessageBox.warning(
+                self,
+                "Batch Crop Incomplete",
+                f"{failed_count} TIFF file(s) could not be cropped:\n\n{details}",
+            )
+
     def _crop_finished(self, output_path, frame_count):
         bounds = self._roi_frame_bounds()
         size_text = ""
@@ -1032,13 +1506,28 @@ class PlaybackWindow(QMainWindow):
         self.crop_worker = None
         self.crop_thread = None
         self.crop_progress.setVisible(False)
+        self.crop_progress.setFormat("Cropping frame %v of %m")
         self._refresh_roi_controls()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.regenerate_frames()
+        self.resize_render_timer.start(75)
 
     def closeEvent(self, event):
+        if self.loader_thread is not None:
+            try:
+                if self.loader_thread.isRunning():
+                    self.loader_thread.quit()
+                    if not self.loader_thread.wait(5000):
+                        self.statusBar().showMessage(
+                            "Finishing the current TIFF frame read; please wait",
+                            5000,
+                        )
+                        event.ignore()
+                        return
+            except RuntimeError:
+                self.loader_thread = None
+                self.loader = None
         if self._crop_is_running():
             self.crop_worker.stop()
             self.crop_thread.quit()
@@ -1049,6 +1538,8 @@ class PlaybackWindow(QMainWindow):
                 )
                 event.ignore()
                 return
+        if hasattr(self.frames, "clear"):
+            self.frames.clear()
         super().closeEvent(event)
 
 

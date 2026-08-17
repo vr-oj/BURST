@@ -13,16 +13,13 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QPushButton,
+    QSizePolicy,
 )
 
 from ..style_constants import PANEL_STYLESHEET
 from utils.config import PLOT_DEFAULT_Y_MIN, PLOT_DEFAULT_Y_MAX
 
 log = logging.getLogger(__name__)
-
-CHECK_MARK = "✓"
-CROSS_MARK = "✗"
-
 
 class PlotControlPanel(QWidget):
     """Panel with controls for the live force-versus-time plot."""
@@ -44,10 +41,11 @@ class PlotControlPanel(QWidget):
 
         panel = QFrame(self)
         panel.setProperty("cssClass", "panelCard")
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         root_layout.addWidget(panel)
 
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(16, 16, 16, 16)
+        panel_layout.setContentsMargins(12, 10, 12, 10)
         panel_layout.setSpacing(8)
 
         header_row = QHBoxLayout()
@@ -57,78 +55,91 @@ class PlotControlPanel(QWidget):
         title = QLabel("Plot Controls")
         title.setProperty("cssClass", "panelTitle")
         header_row.addWidget(title)
+
+        subtitle = QLabel("Live force vs. time")
+        subtitle.setProperty("cssClass", "detailLabel")
+        header_row.addWidget(subtitle)
         header_row.addStretch()
 
-
+        self.auto_summary_label = QLabel()
+        self.auto_summary_label.setProperty("cssClass", "axisState")
+        self.auto_summary_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        header_row.addWidget(self.auto_summary_label)
 
         panel_layout.addLayout(header_row)
 
-        range_widget = QWidget()
-        range_layout = QVBoxLayout(range_widget)
-        range_layout.setContentsMargins(0, 0, 0, 0)
-        range_layout.setSpacing(2)
+        self.x_min = self._create_spinbox(
+            decimals=3, enabled=False, suffix=" s"
+        )
+        self.x_max = self._create_spinbox(
+            decimals=3, enabled=False, suffix=" s"
+        )
 
-        self.range_label = QLabel()
-        self.range_label.setProperty("cssClass", "detailValue")
-        range_layout.addWidget(self.range_label)
-
-        self.auto_summary_label = QLabel()
-        self.auto_summary_label.setProperty("cssClass", "detailLabel")
-        range_layout.addWidget(self.auto_summary_label)
-
-        panel_layout.addWidget(range_widget)
-        panel_layout.addWidget(self._create_divider())
-
-        self._label_width = 132
-
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setVerticalSpacing(8)
-        grid.setHorizontalSpacing(12)
-        grid.setColumnStretch(1, 1)
-        panel_layout.addLayout(grid)
-
-        self.x_min = self._create_spinbox(decimals=3, enabled=False)
-        self.x_max = self._create_spinbox(decimals=3, enabled=False)
-        x_widget = self._build_limit_editor(self.x_min, self.x_max, unit="s")
-
-        self.auto_x_cb = QCheckBox("Auto")
+        self.auto_x_cb = QCheckBox("Auto scale")
         self.auto_x_cb.setChecked(True)
         self.auto_x_cb.setProperty("cssClass", "muted")
 
-        self._add_limit_row(grid, 0, "X Limits", x_widget, self.auto_x_cb)
-
-        self.y_min = self._create_spinbox(decimals=1, enabled=True)
-        self.y_max = self._create_spinbox(decimals=1, enabled=True)
+        self.y_min = self._create_spinbox(
+            decimals=1, enabled=True, suffix=" mN"
+        )
+        self.y_max = self._create_spinbox(
+            decimals=1, enabled=True, suffix=" mN"
+        )
         self.y_min.setValue(PLOT_DEFAULT_Y_MIN)
         self.y_max.setValue(PLOT_DEFAULT_Y_MAX)
-        y_widget = self._build_limit_editor(self.y_min, self.y_max, unit="mN")
 
-        self.auto_y_cb = QCheckBox("Auto")
+        self.auto_y_cb = QCheckBox("Auto scale")
         self.auto_y_cb.setChecked(False)
         self.auto_y_cb.setProperty("cssClass", "muted")
 
-        self._add_limit_row(grid, 1, "Y Limits", y_widget, self.auto_y_cb)
+        self.advanced_controls = QWidget()
+        advanced_layout = QHBoxLayout(self.advanced_controls)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.setSpacing(8)
 
+        self.x_axis_card, self.x_mode_label = self._build_axis_card(
+            axis="X AXIS",
+            quantity="Time",
+            min_spin=self.x_min,
+            max_spin=self.x_max,
+            auto_widget=self.auto_x_cb,
+        )
+        self.y_axis_card, self.y_mode_label = self._build_axis_card(
+            axis="Y AXIS",
+            quantity="Force",
+            min_spin=self.y_min,
+            max_spin=self.y_max,
+            auto_widget=self.auto_y_cb,
+        )
+        advanced_layout.addWidget(self.x_axis_card, 1)
+        advanced_layout.addWidget(self.y_axis_card, 1)
+
+        panel_layout.addWidget(self.advanced_controls, 1)
         panel_layout.addWidget(self._create_divider())
 
-        footer = QHBoxLayout()
-        footer.setContentsMargins(0, 0, 0, 0)
-        footer.setSpacing(8)
-        footer.addStretch()
-        panel_layout.addLayout(footer)
+        footer_row = QHBoxLayout()
+        footer_row.setContentsMargins(0, 0, 0, 0)
+        footer_row.setSpacing(6)
+
+        self.range_label = QLabel()
+        self.range_label.setProperty("cssClass", "detailValue")
+        self.range_label.setMinimumWidth(0)
+        self.range_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        footer_row.addWidget(self.range_label, 1)
 
         self.reset_btn = QPushButton("Reset View")
         self.reset_btn.setProperty("cssClass", "ghost")
-        footer.addWidget(self.reset_btn)
+        footer_row.addWidget(self.reset_btn)
 
         self.clear_plot_btn = QPushButton("Clear Data")
         self.clear_plot_btn.setProperty("cssClass", "ghost")
-        footer.addWidget(self.clear_plot_btn)
+        footer_row.addWidget(self.clear_plot_btn)
 
         self.export_img_btn = QPushButton("Export Image")
         self.export_img_btn.setProperty("cssClass", "primary")
-        footer.addWidget(self.export_img_btn)
+        footer_row.addWidget(self.export_img_btn)
+
+        panel_layout.addLayout(footer_row)
 
         self._wire_events()
         self.setStyleSheet(PANEL_STYLESHEET)
@@ -150,49 +161,81 @@ class PlotControlPanel(QWidget):
         self.reset_btn.clicked.connect(self.reset_zoom_requested.emit)
         self.clear_plot_btn.clicked.connect(self.clear_plot_requested.emit)
         self.export_img_btn.clicked.connect(self.export_plot_image_requested.emit)
-
-
-    def _create_spinbox(self, *, decimals: int, enabled: bool) -> QDoubleSpinBox:
+    def _create_spinbox(
+        self,
+        *,
+        decimals: int,
+        enabled: bool,
+        suffix: str,
+    ) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
         spin.setDecimals(decimals)
         spin.setRange(-1_000_000, 1_000_000)
         spin.setEnabled(enabled)
+        spin.setSuffix(suffix)
         spin.setProperty("cssClass", "monoInput")
-        spin.setMinimumWidth(96)
+        spin.setMinimumWidth(104)
+        spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         spin.setKeyboardTracking(False)
         return spin
 
-    def _build_limit_editor(
+    def _build_axis_card(
         self,
+        *,
+        axis: str,
+        quantity: str,
         min_spin: QDoubleSpinBox,
         max_spin: QDoubleSpinBox,
-        *,
-        unit: str,
-    ) -> QWidget:
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        auto_widget: QCheckBox,
+    ) -> tuple[QFrame, QLabel]:
+        card = QFrame()
+        card.setProperty("cssClass", "subCard")
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        min_label = QLabel("Min")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(7)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(7)
+
+        axis_label = QLabel(axis)
+        axis_label.setProperty("cssClass", "sectionLabel")
+        header.addWidget(axis_label)
+
+        quantity_label = QLabel(quantity)
+        quantity_label.setProperty("cssClass", "detailLabel")
+        header.addWidget(quantity_label)
+        header.addStretch()
+        header.addWidget(auto_widget)
+        layout.addLayout(header)
+
+        limits = QGridLayout()
+        limits.setContentsMargins(0, 0, 0, 0)
+        limits.setHorizontalSpacing(8)
+        limits.setVerticalSpacing(3)
+        limits.setColumnStretch(0, 1)
+        limits.setColumnStretch(1, 1)
+
+        min_label = QLabel("MINIMUM")
         min_label.setProperty("cssClass", "microLabel")
-        min_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        layout.addWidget(min_label)
-        layout.addWidget(min_spin)
+        limits.addWidget(min_label, 0, 0)
 
-        max_label = QLabel("Max")
+        max_label = QLabel("MAXIMUM")
         max_label.setProperty("cssClass", "microLabel")
-        max_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        layout.addWidget(max_label)
-        layout.addWidget(max_spin)
+        limits.addWidget(max_label, 0, 1)
 
-        unit_label = QLabel(unit)
-        unit_label.setProperty("cssClass", "microLabel")
-        unit_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        layout.addWidget(unit_label)
+        limits.addWidget(min_spin, 1, 0)
+        limits.addWidget(max_spin, 1, 1)
+        layout.addLayout(limits)
 
         layout.addStretch()
-        return container
+        mode_label = QLabel()
+        mode_label.setProperty("cssClass", "axisState")
+        layout.addWidget(mode_label)
+
+        return card, mode_label
 
     def _create_divider(self) -> QFrame:
         line = QFrame()
@@ -200,22 +243,6 @@ class PlotControlPanel(QWidget):
         line.setFrameShadow(QFrame.Plain)
         line.setProperty("cssClass", "panelDivider")
         return line
-
-    def _add_limit_row(
-        self,
-        grid: QGridLayout,
-        row: int,
-        label_text: str,
-        widget: QWidget,
-        auto_widget: QCheckBox,
-    ) -> None:
-        label = QLabel(label_text)
-        label.setProperty("cssClass", "detailLabel")
-        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        label.setFixedWidth(self._label_width)
-        grid.addWidget(label, row, 0)
-        grid.addWidget(widget, row, 1)
-        grid.addWidget(auto_widget, row, 2, alignment=Qt.AlignRight | Qt.AlignVCenter)
 
     def _on_auto_x_toggled(self, checked: bool) -> None:
         self.x_min.setEnabled(not checked)
@@ -243,17 +270,23 @@ class PlotControlPanel(QWidget):
         y_min = self.y_min.value()
         y_max = self.y_max.value()
 
-        range_text = (
-            f"Range:  X  {x_min: .3f}  →  {x_max: .3f}  s    |    "
-            f"Y  {y_min: .1f}  →  {y_max: .1f}  mN"
+        x_auto = self.auto_x_cb.isChecked()
+        y_auto = self.auto_y_cb.isChecked()
+        x_range = "Auto" if x_auto else f"{x_min:.3f}–{x_max:.3f} s"
+        y_range = "Auto" if y_auto else f"{y_min:.1f}–{y_max:.1f} mN"
+        self.range_label.setText(
+            f"Active view  ·  X {x_range}  ·  Y {y_range}"
         )
-        self.range_label.setText(range_text)
-
-        auto_parts = [
-            f"{CHECK_MARK if self.auto_x_cb.isChecked() else CROSS_MARK} X",
-            f"{CHECK_MARK if self.auto_y_cb.isChecked() else CROSS_MARK} Y",
-        ]
-        self.auto_summary_label.setText("Auto:  " + "   ".join(auto_parts))
+        self.auto_summary_label.setText(
+            f"X {'AUTO' if x_auto else 'MANUAL'}  ·  "
+            f"Y {'AUTO' if y_auto else 'MANUAL'}"
+        )
+        self.x_mode_label.setText(
+            "Follows elapsed recording time" if x_auto else "Uses the limits above"
+        )
+        self.y_mode_label.setText(
+            "Fits incoming force data" if y_auto else "Uses the limits above"
+        )
 
     def is_autoscale_x(self) -> bool:
         return self.auto_x_cb.isChecked()
