@@ -34,13 +34,67 @@ def normalized_roi_to_bounds(
     if right <= left or bottom <= top:
         return None
 
-    x0 = max(0, min(frame_width, math.floor(left * frame_width)))
-    y0 = max(0, min(frame_height, math.floor(top * frame_height)))
-    x1 = max(0, min(frame_width, math.ceil(right * frame_width)))
-    y1 = max(0, min(frame_height, math.ceil(bottom * frame_height)))
+    def snap_pixel(value: float) -> float:
+        nearest = round(value)
+        return float(nearest) if abs(value - nearest) < 1e-9 else value
+
+    x0 = max(0, min(frame_width, math.floor(snap_pixel(left * frame_width))))
+    y0 = max(0, min(frame_height, math.floor(snap_pixel(top * frame_height))))
+    x1 = max(0, min(frame_width, math.ceil(snap_pixel(right * frame_width))))
+    y1 = max(0, min(frame_height, math.ceil(snap_pixel(bottom * frame_height))))
     if x1 <= x0 or y1 <= y0:
         return None
     return x0, y0, x1, y1
+
+
+def pixel_roi_to_bounds(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    frame_shape: Sequence[int],
+) -> tuple[int, int, int, int]:
+    """Validate a source-pixel ROI and return exclusive slice bounds."""
+
+    if len(frame_shape) < 2:
+        raise ValueError("The source frame dimensions are unavailable.")
+
+    frame_height, frame_width = int(frame_shape[0]), int(frame_shape[1])
+    x, y, width, height = int(x), int(y), int(width), int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError("ROI width and height must be at least 1 pixel.")
+    if x < 0 or y < 0:
+        raise ValueError("ROI X and Y must not be negative.")
+    if x + width > frame_width or y + height > frame_height:
+        raise ValueError(
+            f"ROI ({x}, {y}, {width}×{height}) does not fit inside the "
+            f"{frame_width}×{frame_height} source frame."
+        )
+    return x, y, x + width, y + height
+
+
+def bounds_to_normalized_roi(
+    bounds: tuple[int, int, int, int],
+    frame_shape: Sequence[int],
+) -> tuple[float, float, float, float]:
+    """Convert validated source-pixel bounds to normalized coordinates."""
+
+    x0, y0, x1, y1 = bounds
+    validated = pixel_roi_to_bounds(
+        x0,
+        y0,
+        x1 - x0,
+        y1 - y0,
+        frame_shape,
+    )
+    frame_height, frame_width = int(frame_shape[0]), int(frame_shape[1])
+    x0, y0, x1, y1 = validated
+    return (
+        x0 / frame_width,
+        y0 / frame_height,
+        x1 / frame_width,
+        y1 / frame_height,
+    )
 
 
 def add_crop_to_description(

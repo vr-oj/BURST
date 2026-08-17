@@ -41,9 +41,13 @@
   ```
 - After a fill closes, one optional base-name change is applied transactionally to both files.
 - Default save location is `~/Documents/BURST Results`. Set `BURST_RESULTS_DIR` (or the legacy `BUTI_RESULTS_DIR`) to override.
-- Playback tools support zoom, pan, ROI selection, exporting annotated frames,
-  and cropping an ROI across the complete TIFF recording without changing the
-  original recording or its synchronized CSV data.
+- Playback tools support zoom, pan, drawn or exact pixel-coordinate ROI
+  selection, exporting annotated frames, and cropping an ROI across the
+  complete TIFF recording without changing the original recording or its
+  synchronized CSV data. The same `X`, `Y`, `Width`, and `Height` can be
+  batch-applied to multiple runs.
+- Playback opens large TIFF stacks with bounded, on-demand frame and preview
+  caches instead of expanding and pre-rendering the complete recording in RAM.
 - A live ROI can also be selected before recording. Its source pixels are saved
   without resampling, and independent left/right and up/down flips apply to both
   the preview and TIFF output.
@@ -152,9 +156,12 @@ mismatches and a valid tag will create the GitHub release.
      / **Ctrl+T**. Files are finalized automatically, a completion sound plays,
      and BURST offers to rename the CSV/TIFF pair.
 6. Crop a recording (optional):
-   - Open the recording in **Playback**, select **Draw ROI**, drag over the
-     region to retain, and choose **Export Cropped TIFF**. BURST writes a new
-     raw TIFF stack and leaves the original TIFF and synchronized CSV intact.
+   - Open the recording in **Playback**, select **Draw ROI** or enter the exact
+     source-pixel `X`, `Y`, `Width`, and `Height`, then choose **Apply ROI**.
+   - Choose **Export Cropped TIFF** for the open recording, or **Batch Crop
+     TIFFs…** to apply those identical bounds to several runs. Batch results are
+     saved beside each source as `<original>_cropped.tif`; existing results are
+     skipped. Original TIFFs and synchronized CSV files remain intact.
 
 ---
 ## Troubleshooting
