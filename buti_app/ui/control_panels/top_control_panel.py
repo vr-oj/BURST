@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ..widgets.metric_card import MetricCard
+from utils.time_format import format_elapsed_time
 
 
 log = logging.getLogger(__name__)
@@ -94,11 +95,13 @@ class TopControlPanel(QWidget):
 
         panel_layout.addLayout(detail_grid)
 
-        self._detail_label_width = 132
+        self._detail_label_width = 170
         self.detail_values: Dict[str, QLabel] = {}
 
         self._add_detail_field(detail_grid, 0, 0, "Device Frame #", "frame")
-        self._add_detail_field(detail_grid, 1, 0, "Device Time (s)", "device_time")
+        self._add_detail_field(
+            detail_grid, 1, 0, "Device Time (HH:MM:SS.s)", "device_time"
+        )
         self._add_detail_field(detail_grid, 2, 0, "Distance (mm)", "distance")
 
         self._add_detail_field(detail_grid, 0, 1, "Cycles", "cycles")
@@ -113,14 +116,16 @@ class TopControlPanel(QWidget):
         command_layout.addStretch()
         panel_layout.addLayout(command_layout)
 
-        self.start_btn = QPushButton("Start")
+        self.start_btn = QPushButton("Run Device")
         self.start_btn.setEnabled(False)
+        self.start_btn.setToolTip("Run the BUTI device without saving recording files")
         self.start_btn.setProperty("cssClass", "primary")
         self.start_btn.clicked.connect(self.start_requested.emit)
         command_layout.addWidget(self.start_btn)
 
-        self.stop_btn = QPushButton("Stop")
+        self.stop_btn = QPushButton("Stop Device")
         self.stop_btn.setEnabled(False)
+        self.stop_btn.setToolTip("Stop the current BUTI device run")
         self.stop_btn.setProperty("cssClass", "primary")
         self.stop_btn.clicked.connect(self.stop_requested.emit)
         command_layout.addWidget(self.stop_btn)
@@ -218,28 +223,7 @@ class TopControlPanel(QWidget):
 
     @staticmethod
     def _format_clock_time(seconds: float) -> str:
-        if seconds is None:
-            return EM_DASH
-
-        total = max(float(seconds), 0.0)
-        minutes = int(total // 60)
-        remaining = total - minutes * 60
-        remaining = round(remaining, 1)
-
-        if remaining >= 60.0:
-            minutes += 1
-            remaining = 0.0
-
-        whole_seconds = int(remaining)
-        tenths = int(round((remaining - whole_seconds) * 10))
-        if tenths == 10:
-            whole_seconds += 1
-            tenths = 0
-            if whole_seconds == 60:
-                minutes += 1
-                whole_seconds = 0
-
-        return f"{minutes:02d}:{whole_seconds:02d}.{tenths}"
+        return format_elapsed_time(seconds)
 
     def _set_detail_metric(
         self,
@@ -294,8 +278,13 @@ class TopControlPanel(QWidget):
 
         self._set_status_badge(text, connected)
 
-        for btn in (self.start_btn, self.stop_btn, self.reset_btn, self.zero_btn, self.step_btn):
+        self.set_run_state(False, connected=connected)
+        for btn in (self.reset_btn, self.zero_btn, self.step_btn):
             btn.setEnabled(connected)
+
+    def set_run_state(self, running: bool, *, connected: bool = True) -> None:
+        self.start_btn.setEnabled(bool(connected and not running))
+        self.stop_btn.setEnabled(bool(connected and running))
 
     def update_burst_data(
         self,
@@ -323,7 +312,6 @@ class TopControlPanel(QWidget):
         self.time_card.set_value(
             self._format_metric_value(
                 time_s,
-                "s",
                 formatter=self._format_clock_time,
             )
         )
@@ -336,7 +324,6 @@ class TopControlPanel(QWidget):
         self._set_detail_metric(
             "device_time",
             time_s,
-            "s",
             formatter=self._format_clock_time,
         )
         self._set_detail_metric(

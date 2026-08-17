@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QComboBox,
     QPushButton,
+    QCheckBox,
 )
 
 from ..style_constants import PANEL_STYLESHEET
@@ -28,6 +29,7 @@ class CameraInfoPanel(QWidget):
         self._frame_count = 0
         self._fps_value: Optional[float] = None
         self._status_text = "Disconnected"
+        self._has_roi = False
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -115,6 +117,33 @@ class CameraInfoPanel(QWidget):
         resolution_row.addWidget(self.start_button)
 
         grid.addWidget(resolution_widget, 1, 1)
+
+        transform_label = QLabel("View / Recording")
+        transform_label.setProperty("cssClass", "detailLabel")
+        transform_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        transform_label.setFixedWidth(label_width)
+        grid.addWidget(transform_label, 2, 0)
+
+        transform_row = QHBoxLayout()
+        transform_row.setContentsMargins(0, 0, 0, 0)
+        transform_row.setSpacing(8)
+        transform_widget = QWidget()
+        transform_widget.setLayout(transform_row)
+
+        self.mirror_horizontal_cb = QCheckBox("Flip Left/Right")
+        self.mirror_vertical_cb = QCheckBox("Flip Up/Down")
+        self.roi_button = QPushButton("Draw ROI")
+        self.roi_button.setProperty("cssClass", "ghost")
+        self.roi_button.setEnabled(False)
+        self.clear_roi_button = QPushButton("Clear ROI")
+        self.clear_roi_button.setProperty("cssClass", "ghost")
+        self.clear_roi_button.setEnabled(False)
+        transform_row.addWidget(self.mirror_horizontal_cb)
+        transform_row.addWidget(self.mirror_vertical_cb)
+        transform_row.addWidget(self.roi_button)
+        transform_row.addWidget(self.clear_roi_button)
+        transform_row.addStretch()
+        grid.addWidget(transform_widget, 2, 1)
 
         panel_layout.addWidget(self._create_divider())
 
@@ -206,6 +235,20 @@ class CameraInfoPanel(QWidget):
 
     def status_text(self) -> str:
         return self._status_text
+
+    def set_roi_available(self, available: bool, has_roi: bool = False) -> None:
+        self._has_roi = bool(has_roi)
+        self.roi_button.setEnabled(bool(available))
+        self.roi_button.setText("Edit ROI" if self._has_roi else "Draw ROI")
+        self.clear_roi_button.setEnabled(bool(available and self._has_roi))
+
+    def set_transform_controls_enabled(self, enabled: bool) -> None:
+        self.mirror_horizontal_cb.setEnabled(enabled)
+        self.mirror_vertical_cb.setEnabled(enabled)
+        self.set_roi_available(
+            enabled and self._status_text == "Connected",
+            self._has_roi,
+        )
 
     def _format_value(
         self,

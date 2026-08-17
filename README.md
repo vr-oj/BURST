@@ -9,9 +9,10 @@
 2. **Set Up Camera** – Choose camera and resolution, then click **Start Camera**.
 3. **Adjust Exposure/Gain** – Use the camera controls to fine-tune settings.
 4. **Zero BURST** – Ensure the force reading is zeroed before recording.
-5. **Start Recording** – Click **Start Recording** to begin synchronized acquisition.
-6. **Stop Recording** – Click **Stop Recording** when the trial is complete.
-7. **Playback & Export** – Open **Playback** to review the TIFF stack, overlay force data, and export frames.
+5. **Choose a Session** – Select or create the session that will contain its Fill folders.
+6. **Start Recording** – Click **Start Recording** to begin synchronized acquisition.
+7. **Finish Recording** – BURST stops automatically when device data ends, plays a completion chime, and offers one name for the CSV/TIFF pair.
+8. **Playback & Export** – Open **Playback** to review the TIFF stack, overlay force data, and export frames.
 
 ---
 ## Features
@@ -23,6 +24,8 @@
 
 ### Live Force Plotting
 - Streams force data from the BUTI Arduino Box at 460800 baud and renders a live trace with frame index, elapsed time, and force annotations.
+- Clears the previous trace once when the first packet of a new device run arrives.
+- Detects the end of a run with an adaptive serial-silence timeout while keeping the port connected.
 
 ### High-Speed Camera Preview & Control
 - Integrates with The Imaging Source cameras via IC Imaging Control 4 (IC4).
@@ -30,16 +33,22 @@
 - Provides exposure, gain, and brightness sliders with instant visual feedback.
 
 ### Synchronized Output
-- Recording folder structure:
+- Recording folder structure groups multiple fills into a named daily session:
   ```
-  BURST_ROOT/YYYY-MM-DD/FillN/
-      recording_*.csv   # Force + timing data
-      recording_*.tif   # Grayscale stack, one frame per BUTI Arduino Box trigger
+  BURST_ROOT/YYYY-MM-DD/Session Name/FillN/
+      trial_name_force.csv   # Force + timing data
+      trial_name_video.tif   # Grayscale stack, one frame per BUTI Arduino Box trigger
   ```
+- After a fill closes, one optional base-name change is applied transactionally to both files.
 - Default save location is `~/Documents/BURST Results`. Set `BURST_RESULTS_DIR` (or the legacy `BUTI_RESULTS_DIR`) to override.
 - Playback tools support zoom, pan, ROI selection, exporting annotated frames,
   and cropping an ROI across the complete TIFF recording without changing the
   original recording or its synchronized CSV data.
+- A live ROI can also be selected before recording. Its source pixels are saved
+  without resampling, and independent left/right and up/down flips apply to both
+  the preview and TIFF output.
+- A bundled completion chime is enabled by default and can be muted from the
+  **Acquisition** menu.
 
 ---
 ## Under the Hood
@@ -95,8 +104,8 @@ remove that warning for an official public release.
 
 ### Building a Windows Test Installer
 
-BURST uses one version source: `buti_app/VERSION`. The current test version is
-`1.2.0`. Update only that file when preparing another release.
+BURST uses one version source: `buti_app/VERSION`. The current version is
+`1.3.0`. Update only that file when preparing another release.
 
 To build the installer directly on Windows:
 
@@ -110,14 +119,14 @@ iscc installer.iss
 ```
 
 The installer will be written to
-`installer_output\BURST_Setup_1.2.0.exe`.
+`installer_output\BURST_Setup_1.3.0.exe`.
 
 Once this workflow exists on the default branch, **Actions → Build Windows
 Installer → Run workflow** can also build any selected branch. A manual run
 creates a short-lived installable artifact without creating a GitHub release.
 
 After the build passes hardware testing, merge it into `main`, then create and
-push the matching tag (`v1.2.0`). The tag must point to the release commit and
+push the matching tag (`v1.3.0`). The tag must point to the release commit and
 exactly match the application version with a leading `v`; the build will reject
 mismatches and a valid tag will create the GitHub release.
 
@@ -134,10 +143,14 @@ mismatches and a valid tag will create the GitHub release.
 3. Configure the camera:
    - Pick the desired camera/resolution and click **Start Camera** for a live preview.
 4. Start recording:
+   - Use **Acquisition → Change Recording Session** to select or create the
+     session used for subsequent Fill folders.
    - Use **Acquisition → Start Recording** or press **Ctrl+R**.
    - BURST waits for the first BUTI Arduino Box tick before writing data.
 5. Stop recording:
-   - Use **Acquisition → Stop Recording** or press **Ctrl+T**. Files are finalized automatically.
+   - Let the device run finish naturally, or use **Acquisition → Stop Recording**
+     / **Ctrl+T**. Files are finalized automatically, a completion sound plays,
+     and BURST offers to rename the CSV/TIFF pair.
 6. Crop a recording (optional):
    - Open the recording in **Playback**, select **Draw ROI**, drag over the
      region to retain, and choose **Export Cropped TIFF**. BURST writes a new

@@ -10,17 +10,15 @@ from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition
 import queue
 
 import utils.config as config
+from utils.serial_activity import SerialActivityTracker
 
 log = logging.getLogger(__name__)
-
-# How many seconds of silence on the serial port we interpret as
-# "The BUTI Arduino Box has stopped streaming." You can tune this if needed.
-IDLE_TIMEOUT_S = 2.0
-
 
 class SerialThread(QThread):
     data_ready = pyqtSignal(float, int, float, int, float)
     """Emits (time_s, frame_idx, distance, cycle, force)."""
+    stream_started = pyqtSignal()
+    stream_stopped = pyqtSignal(str)
     error_occurred = pyqtSignal(str)  # For reporting errors back to the GUI
     status_changed = pyqtSignal(str)  # For general status updates
 
@@ -34,11 +32,9 @@ class SerialThread(QThread):
 
         # Control flags
         self.running = False
-        self._got_first_packet = False  # Have we seen at least one valid line?
-        self._last_data_time = None  # Timestamp (time.time()) of last valid packet
         self._stop_requested = False
-        self._idle_timeout_enabled = True  # watchdog for streaming silence
-        self._idle_warning_active = False
+        self._idle_timeout_enabled = True
+        self._activity = SerialActivityTracker()
 
 
         # For sending commands (not used here, but kept for future)
@@ -47,24 +43,22 @@ class SerialThread(QThread):
         self.wait_condition = QWaitCondition()
 
     def set_idle_timeout_enabled(self, enabled: bool):
-        """Toggle the idle-timeout watchdog used during streaming."""
+        """Toggle activity polling while preserving backwards compatibility."""
         self._idle_timeout_enabled = bool(enabled)
-        self._got_first_packet = False
-        self._last_data_time = None
-        self._idle_warning_active = False
+        if not enabled:
+            self._activity.reset()
 
     def run(self):
         """Main loop for reading from the BURST device.
 
         If a serial ``port`` is provided, the thread opens it and emits
-        ``data_ready`` for each valid packet. Lack of new data for
-        ``IDLE_TIMEOUT_S`` seconds after the first packet triggers
-        shutdown. When no ``port`` is given the thread immediately
-        reports an error and exits.
+        ``data_ready`` for each valid packet. Adaptive silence detection emits
+        ``stream_stopped`` without closing the transport, allowing a later
+        packet to begin another run. When no ``port`` is given the thread
+        immediately reports an error and exits.
         """
         self.running = True
-        self._got_first_packet = False
-        self._last_data_time = None
+        self._activity.reset()
 
         if not self.port:
             self.error_occurred.emit("No serial port specified")
@@ -179,7 +173,13 @@ class SerialThread(QThread):
                                 )
                                 continue
 
-                            # Valid packet â†’ emit signal
+                            now = time.monotonic()
+                            if self._activity.note_packet(now):
+                                log.info("[SerialThread] New BUTI data run detected")
+                                self.status_changed.emit("Data run active")
+                                self.stream_started.emit()
+
+                            # Valid packet -> emit signal
                             self.data_ready.emit(
                                 time_s,
                                 frame_idx_device,
@@ -188,16 +188,6 @@ class SerialThread(QThread):
                                 force,
                             )
 
-                            # Mark that we've seen at least one packet
-                            if not self._got_first_packet:
-                                self._got_first_packet = True
-                            # Update last-data timestamp and clear idle warning
-                            self._last_data_time = time.time()
-                            if self._idle_warning_active:
-                                self.status_changed.emit(
-                                    "BUTI Arduino Box data stream resumed"
-                                )
-                                self._idle_warning_active = False
                         else:
                             # readline timed out without data; will check idle below
                             pass
@@ -211,6 +201,8 @@ class SerialThread(QThread):
                         f"[SerialThread] SerialException: {se} â†’ will attempt reconnect"
                     )
                     self.status_changed.emit("Serial disconnected, retryingâ€¦")
+                    if self._activity.mark_stopped():
+                        self.stream_stopped.emit("disconnected")
                     try:
                         self.ser.close()
                     except Exception:
@@ -231,19 +223,12 @@ class SerialThread(QThread):
                     log.exception(f"[SerialThread] Unexpected error in read loop: {e}")
                     self.msleep(100)
 
-                # ---- Idle timeout watchdog ---------------------------------
-                if (
-                    self._idle_timeout_enabled
-                    and self._got_first_packet
-                    and self._last_data_time is not None
-                    and (time.time() - self._last_data_time) > IDLE_TIMEOUT_S
-                ):
-                    elapsed = time.time() - self._last_data_time
-                    if not self._idle_warning_active:
-                        msg = f"No data from the BUTI Arduino Box for {elapsed:.1f}s (waiting)"
-                        log.warning(f"[SerialThread] {msg}")
-                        self.status_changed.emit(msg)
-                        self._idle_warning_active = True
+                # ---- Adaptive run-end watchdog ------------------------------
+                if self._idle_timeout_enabled and self._activity.poll(time.monotonic()):
+                    msg = "Data run complete (serial stream stopped)"
+                    log.info("[SerialThread] %s", msg)
+                    self.status_changed.emit(msg)
+                    self.stream_stopped.emit("silence")
 
 
         # 3) Clean up on exit
@@ -254,6 +239,8 @@ class SerialThread(QThread):
             except Exception as e:
                 log.exception(f"Error closing serial port {self.port}: {e}")
 
+        if self._activity.mark_stopped():
+            self.stream_stopped.emit("disconnected")
         self.status_changed.emit("Disconnected")
         self.running = False
         log.info("SerialThread finished.")
@@ -302,4 +289,3 @@ class SerialThread(QThread):
             log.warning("SerialThread did not stop gracefully â†’ terminating.")
             self.terminate()
             self.wait(1000)
-

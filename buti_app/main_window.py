@@ -7,15 +7,12 @@ import logging
 import csv
 import json
 from datetime import datetime
-from typing import Optional
 try:
     import imagingcontrol4 as ic4  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
     ic4 = None
 
 import subprocess
-import sip
-
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -39,6 +36,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox,
     QCheckBox,
     QHBoxLayout,
+    QInputDialog,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -51,6 +49,10 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QIcon, QKeySequence, QImage, QDesktopServices
 from PyQt5.QtCore import QUrl
+try:
+    from PyQt5.QtMultimedia import QSoundEffect
+except ImportError:  # pragma: no cover - platform packaging fallback
+    QSoundEffect = None
 
 import buti_app
 
@@ -60,6 +62,9 @@ from utils.app_settings import (
     SETTING_LAST_CAMERA_INDEX,
     SETTING_RESULTS_DIR,
     SETTING_OPEN_FOLDER_PROMPT,
+    SETTING_MIRROR_HORIZONTAL,
+    SETTING_MIRROR_VERTICAL,
+    SETTING_COMPLETION_SOUND,
 )
 import utils.config as config
 from utils.config import (
@@ -79,7 +84,8 @@ from utils.config import (
     SERIAL_CMD_RESET,
     SERIAL_CMD_STEP,
 )
-from utils.path_helpers import get_next_fill_folder, resource_path
+from utils.path_helpers import get_next_fill_folder, list_session_names, resource_path
+from utils.recording_files import rename_recording_pair, validate_path_component
 from ui.canvas.qtcamera_widget import QtCameraWidget
 from ui.control_panels.camera_control_panel import CameraControlPanel
 from ui.control_panels.camera_info_panel import CameraInfoPanel
@@ -110,6 +116,20 @@ class MainWindow(QMainWindow):
         self._open_folder_prompt = load_app_setting(SETTING_OPEN_FOLDER_PROMPT, True)
         self._last_recording_paths = {"tiff": None, "csv": None}
         self._serial_start_sent = False
+        self._device_run_active = False
+        self._recording_state = "idle"
+        self._current_session_name = None
+        self._recording_had_output = False
+        self._completion_sound_enabled = bool(
+            load_app_setting(SETTING_COMPLETION_SOUND, True)
+        )
+        self._completion_sound_effect = None
+        self._mirror_horizontal = bool(
+            load_app_setting(SETTING_MIRROR_HORIZONTAL, False)
+        )
+        self._mirror_vertical = bool(
+            load_app_setting(SETTING_MIRROR_VERTICAL, False)
+        )
 
         # Camera‐related
         self.device_combo = None
@@ -159,20 +179,8 @@ class MainWindow(QMainWindow):
                 "Developer camera backend active (%s).",
                 self._dev_camera_source.backend,
             )
-        # Initialize recorder thread/worker for recording manager
-        self._recorder_thread = QThread(self)
-        dummy_output_dir = ""  # replace with a default or override later
-        self._recorder_worker = RecordingManager(dummy_output_dir)
-        # 2) Move the worker into the new thread:
-        self._recorder_worker.moveToThread(self._recorder_thread)
-        # 3) Connect the worker’s finished signal → thread.quit() and cleanup:
-        self._recorder_worker.finished.connect(self._recorder_thread.quit)
-        self._recorder_worker.finished.connect(self._recorder_worker.deleteLater)
-        self._recorder_thread.finished.connect(self._recorder_thread.deleteLater)
-        # Initialize recorder thread/worker for recording manager
-        self._recorder_thread = QThread(self)
-
         self._init_paths_and_icons()
+        self._init_completion_sound()
         self._build_console_log_dock()
         self._build_central_widget_layout()
         self._build_menus()
@@ -221,6 +229,35 @@ class MainWindow(QMainWindow):
         self.icon_refresh = get_icon("sync.svg")
         self.icon_playback = get_icon("image.svg")
 
+    def _init_completion_sound(self):
+        """Preload the bundled completion cue, retaining a system-beep fallback."""
+
+        if QSoundEffect is None:
+            return
+        sound_path = resource_path("ui", "sounds", "recording_complete.wav")
+        if not os.path.exists(sound_path):
+            log.warning("Recording completion sound is missing: %s", sound_path)
+            return
+        try:
+            effect = QSoundEffect(self)
+            effect.setSource(QUrl.fromLocalFile(sound_path))
+            effect.setVolume(1.0)
+            self._completion_sound_effect = effect
+        except Exception:
+            log.exception("Unable to initialize the recording completion sound")
+
+    def _play_completion_sound(self):
+        if not self._completion_sound_enabled:
+            return
+        try:
+            if self._completion_sound_effect is not None:
+                if self._completion_sound_effect.status() != QSoundEffect.Error:
+                    self._completion_sound_effect.play()
+                    return
+        except Exception:
+            log.exception("Unable to play the recording completion sound")
+        QApplication.beep()
+
     def _build_console_log_dock(self):
         self.dock_console = QDockWidget("Console Log", self)
         self.dock_console.setObjectName("ConsoleLogDock")
@@ -265,9 +302,34 @@ class MainWindow(QMainWindow):
 
         self.resolution_combo = self.camera_info_panel.resolution_combo
         self.resolution_combo.addItem("Select Resolution…", None)
+        self.resolution_combo.currentIndexChanged.connect(
+            self._on_camera_configuration_changed
+        )
 
         self.btn_start_camera = self.camera_info_panel.start_button
         self.btn_start_camera.clicked.connect(self._on_start_stop_camera)
+
+        self.camera_info_panel.mirror_horizontal_cb.setChecked(
+            self._mirror_horizontal
+        )
+        self.camera_info_panel.mirror_vertical_cb.setChecked(
+            self._mirror_vertical
+        )
+        self.camera_info_panel.mirror_horizontal_cb.toggled.connect(
+            self._on_camera_transform_changed
+        )
+        self.camera_info_panel.mirror_vertical_cb.toggled.connect(
+            self._on_camera_transform_changed
+        )
+        self.camera_info_panel.roi_button.clicked.connect(self._begin_live_roi)
+        self.camera_info_panel.clear_roi_button.clicked.connect(
+            self.camera_widget.clear_roi
+        )
+        self.camera_widget.roi_changed.connect(self._on_live_roi_changed)
+        self.camera_widget.roi_edit_finished.connect(self._on_live_roi_finished)
+        self.camera_widget.set_mirroring(
+            self._mirror_horizontal, self._mirror_vertical
+        )
 
         self.camera_tabs.addTab(self.camera_info_panel, "Camera")
 
@@ -423,6 +485,8 @@ class MainWindow(QMainWindow):
         Called whenever the user picks a different camera in the “Device” combo.
         Open it briefly, enumerate PixelFormat × (W,H), then close.
         """
+        if self.camera_widget is not None:
+            self.camera_widget.clear_roi()
         dev_info = self.device_combo.itemData(index)
         self.resolution_combo.clear()
         self.resolution_combo.addItem("Select Resolution…", None)
@@ -475,6 +539,54 @@ class MainWindow(QMainWindow):
                 grab.device_close()
             except Exception:
                 pass
+
+    @pyqtSlot()
+    def _on_camera_configuration_changed(self):
+        if self.camera_widget is not None:
+            self.camera_widget.clear_roi()
+
+    @pyqtSlot()
+    def _on_camera_transform_changed(self):
+        self._mirror_horizontal = bool(
+            self.camera_info_panel.mirror_horizontal_cb.isChecked()
+        )
+        self._mirror_vertical = bool(
+            self.camera_info_panel.mirror_vertical_cb.isChecked()
+        )
+        save_app_setting(SETTING_MIRROR_HORIZONTAL, self._mirror_horizontal)
+        save_app_setting(SETTING_MIRROR_VERTICAL, self._mirror_vertical)
+        self.camera_widget.set_mirroring(
+            self._mirror_horizontal, self._mirror_vertical
+        )
+
+    @pyqtSlot()
+    def _begin_live_roi(self):
+        if not self.camera_widget.begin_roi_edit():
+            self.statusBar().showMessage("Start the camera before drawing an ROI.", 3000)
+            return
+        self.statusBar().showMessage(
+            "Drag over the full camera image to choose the recording ROI.", 5000
+        )
+
+    @pyqtSlot(object)
+    def _on_live_roi_changed(self, roi):
+        camera_active = self.camera_thread is not None and self.camera_thread.isRunning()
+        self.camera_info_panel.set_roi_available(camera_active, roi is not None)
+
+    @pyqtSlot(object)
+    def _on_live_roi_finished(self, roi):
+        source_size = self.camera_widget.source_size()
+        if roi is None or source_size is None:
+            return
+        from utils.roi import normalized_roi_to_bounds
+
+        width, height = source_size
+        bounds = normalized_roi_to_bounds(roi, (height, width))
+        if bounds:
+            x0, y0, x1, y1 = bounds
+            self.statusBar().showMessage(
+                f"Recording ROI selected: {x1 - x0}×{y1 - y0} pixels.", 4000
+            )
 
     @pyqtSlot()
     def _on_start_stop_camera(self):
@@ -543,9 +655,14 @@ class MainWindow(QMainWindow):
             # Actually start the thread
             self.camera_thread.start()
             self.btn_start_camera.setText("Stop Camera")
+            self._refresh_recording_button_states()
 
         else:
             # ─── Stop camera ──────────────────────────────────────────────────
+            if self._recording_state in {"preparing", "recording"}:
+                self._request_recording_stop(
+                    send_device_stop=True, reason="camera stopped"
+                )
             self.camera_thread.stop()
             self.camera_thread = None
 
@@ -561,6 +678,10 @@ class MainWindow(QMainWindow):
             self.camera_info_panel.reset_metrics()
             self.camera_info_panel.set_status_message("Camera idle.")
             self.camera_widget.clear_image()
+            self.camera_info_panel.set_roi_available(
+                False, self.camera_widget.normalized_roi() is not None
+            )
+            self._refresh_recording_button_states()
 
     @pyqtSlot()
     def _on_grabber_ready(self):
@@ -582,6 +703,10 @@ class MainWindow(QMainWindow):
 
         self.camera_info_panel.update_status("Connected", state="connected")
         self.camera_info_panel.set_status_message("Streaming")
+        self.camera_info_panel.set_roi_available(
+            True, self.camera_widget.normalized_roi() is not None
+        )
+        self._refresh_recording_button_states()
 
     @pyqtSlot(QImage, object)
     def _update_camera_info(self, image: QImage, raw):
@@ -599,6 +724,11 @@ class MainWindow(QMainWindow):
         if self.camera_info_panel.status_text() != "Connected":
             self.camera_info_panel.update_status("Connected", state="connected")
             self.camera_info_panel.set_status_message("Streaming")
+            self.camera_info_panel.set_roi_available(
+                self._recording_state == "idle",
+                self.camera_widget.normalized_roi() is not None,
+            )
+            self._refresh_recording_button_states()
 
     @pyqtSlot(str, str)
     def _on_camera_error(self, msg: str, code: str):
@@ -624,6 +754,12 @@ class MainWindow(QMainWindow):
         self.camera_info_panel.set_status_message("Camera error.")
         self.camera_widget.clear_image()
         self.btn_start_camera.setText("Start Camera")
+        self.camera_info_panel.set_roi_available(
+            False, self.camera_widget.normalized_roi() is not None
+        )
+        if self._recording_state in {"preparing", "recording"}:
+            self._request_recording_stop(send_device_stop=True, reason="camera error")
+        self._refresh_recording_button_states()
 
     def _build_menus(self):
         mb = self.menuBar()
@@ -659,6 +795,21 @@ class MainWindow(QMainWindow):
         )
         self.recording_action.setShortcut(Qt.CTRL | Qt.Key_R)
         am.addAction(self.recording_action)
+        self.change_session_action = QAction(
+            "Change Recording &Session…",
+            self,
+            triggered=self._change_recording_session,
+        )
+        am.addAction(self.change_session_action)
+        am.addSeparator()
+        self.completion_sound_action = QAction(
+            "Play Recording Completion &Sound", self, checkable=True
+        )
+        self.completion_sound_action.setChecked(self._completion_sound_enabled)
+        self.completion_sound_action.toggled.connect(
+            self._set_completion_sound_enabled
+        )
+        am.addAction(self.completion_sound_action)
 
         vm = mb.addMenu("&View")
         if hasattr(self, "dock_console") and self.dock_console:
@@ -740,9 +891,11 @@ class MainWindow(QMainWindow):
         sb = self.statusBar()
         self.serial_status_label = QLabel("Serial: Disconnected")
         self.recording_status_label = QLabel("Not Recording")
+        self.recording_session_label = QLabel("Recording Session: Not Selected")
         self.app_session_time_label = QLabel("Session: 00:00:00")
         sb.addPermanentWidget(self.serial_status_label)
         sb.addPermanentWidget(self.recording_status_label)
+        sb.addPermanentWidget(self.recording_session_label)
         sb.addPermanentWidget(self.app_session_time_label)
         self._app_session_seconds = 0
         self._app_session_timer = QTimer(self)
@@ -770,9 +923,7 @@ class MainWindow(QMainWindow):
             self.force_plot_widget.clear_plot()
             self.statusBar().showMessage("Force plot data cleared.", 3000)
 
-    def _send_serial_command(
-        self, command: str, *, enable_idle_timeout: Optional[bool] = None
-    ) -> bool:
+    def _send_serial_command(self, command: str) -> bool:
         """Safely issue a single-character command to the serial thread."""
 
         if not self._serial_thread or not self._serial_thread.isRunning():
@@ -784,11 +935,6 @@ class MainWindow(QMainWindow):
 
         try:
             self._serial_thread.send_command(command)
-            if (
-                enable_idle_timeout is not None
-                and hasattr(self._serial_thread, "set_idle_timeout_enabled")
-            ):
-                self._serial_thread.set_idle_timeout_enabled(enable_idle_timeout)
             return True
         except Exception:
             log.exception("Failed to send serial command '%s'", command)
@@ -816,9 +962,17 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_start_pump(self):
         """Send the firmware start command without recording."""
-        if self._send_serial_command(SERIAL_CMD_START, enable_idle_timeout=True):
-            self.statusBar().showMessage("Start command sent to the BUTI Arduino Box.", 3000)
+        if self._recording_state != "idle" or self._device_run_active:
+            self.statusBar().showMessage("The BUTI device is already running.", 3000)
+            return
+        if self._send_serial_command(SERIAL_CMD_START):
+            self.statusBar().showMessage(
+                "Run Device command sent; no recording files will be saved.", 4000
+            )
             self._serial_start_sent = True
+            self._device_run_active = True
+            self.top_ctrl.set_run_state(True, connected=True)
+            self._refresh_recording_button_states()
         else:
             self.statusBar().showMessage(
                 "BUTI Arduino Box not connected; cannot send start command.", 3000
@@ -827,20 +981,24 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_stop_pump(self):
         """Send the firmware stop command."""
-        if self._send_serial_command(SERIAL_CMD_STOP, enable_idle_timeout=False):
+        if self._send_serial_command(SERIAL_CMD_STOP):
             self.statusBar().showMessage("Stop command sent to the BUTI Arduino Box.", 3000)
+            self._device_run_active = False
+            self.top_ctrl.set_run_state(False, connected=True)
         else:
             self.statusBar().showMessage(
                 "BUTI Arduino Box not connected; cannot send stop command.", 3000
             )
         self._serial_start_sent = False
+        if self._recording_state in {"preparing", "recording"}:
+            self._request_recording_stop(
+                send_device_stop=False, reason="Stop Device command"
+            )
 
     @pyqtSlot()
     def _on_reset_burst(self):
         """Send the firmware reset command."""
-        success = self._send_serial_command(
-            SERIAL_CMD_RESET, enable_idle_timeout=False
-        )
+        success = self._send_serial_command(SERIAL_CMD_RESET)
         if success:
             self.statusBar().showMessage("Reset command sent to the BUTI Arduino Box.", 3000)
         else:
@@ -898,7 +1056,58 @@ class MainWindow(QMainWindow):
             results_dir = os.path.join(new_dir, "BURST Results")
             set_results_dir(results_dir)
             save_app_setting(SETTING_RESULTS_DIR, results_dir)
+            self._current_session_name = None
+            if hasattr(self, "recording_session_label"):
+                self.recording_session_label.setText(
+                    "Recording Session: Not Selected"
+                )
             self.statusBar().showMessage(f"Results folder set to {results_dir}", 5000)
+
+    @pyqtSlot(bool)
+    def _set_completion_sound_enabled(self, enabled: bool):
+        self._completion_sound_enabled = bool(enabled)
+        save_app_setting(SETTING_COMPLETION_SOUND, self._completion_sound_enabled)
+
+    @pyqtSlot()
+    def _change_recording_session(self):
+        if self._recording_state != "idle":
+            return
+        try:
+            existing = list_session_names()
+        except OSError as exc:
+            self._show_error_dialog(
+                "Recording Session Error",
+                f"Unable to read the results folder:\n{exc}",
+            )
+            return
+        default = self._current_session_name or (existing[0] if existing else "Session 1")
+        choices = list(existing)
+        if default not in choices:
+            choices.insert(0, default)
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "Recording Session",
+            "Select an existing session or type a new session name:",
+            choices,
+            max(0, choices.index(default)),
+            True,
+        )
+        if not accepted:
+            return
+        try:
+            self._current_session_name = validate_path_component(
+                selected, label="Session name"
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Session Name", str(exc))
+            return self._change_recording_session()
+        self.statusBar().showMessage(
+            f"Recording session: {self._current_session_name}", 5000
+        )
+        self.recording_session_label.setText(
+            f"Recording Session: {self._current_session_name}"
+        )
+        self._refresh_recording_button_states()
 
     def _show_error_dialog(self, title: str, message: str, details: str = None):
         """Display a critical error dialog with optional details."""
@@ -961,6 +1170,12 @@ class MainWindow(QMainWindow):
 
                 # Create and start the new thread
                 self._serial_thread = SerialThread(port=port, parent=self)
+                self._serial_thread.stream_started.connect(
+                    self._handle_serial_stream_started
+                )
+                self._serial_thread.stream_stopped.connect(
+                    self._handle_serial_stream_stopped
+                )
                 self._serial_thread.data_ready.connect(self._handle_new_serial_data)
                 self._serial_thread.error_occurred.connect(self._handle_serial_error)
                 self._serial_thread.status_changed.connect(
@@ -1004,6 +1219,8 @@ class MainWindow(QMainWindow):
                 pass
 
             self._serial_start_sent = False
+            self._device_run_active = False
+            self.top_ctrl.set_run_state(False, connected=False)
             # Immediately flip QAction back to “Connect BUTI Arduino Box”
             self.connect_serial_action.setIcon(self.icon_connect)
             self.connect_serial_action.setText("Connect BUTI Arduino Box")
@@ -1025,12 +1242,22 @@ class MainWindow(QMainWindow):
 
         normalized = status.lower()
         connected_flag = (
-            ("connected" in normalized or "opened serial port" in normalized)
+            self._serial_thread is not None
+            and self._serial_thread.isRunning()
             and "disconnect" not in normalized
             and "error" not in normalized
         )
         self.top_ctrl.update_connection_status(status, connected_flag)
-
+        self.top_ctrl.set_run_state(
+            self._device_run_active, connected=connected_flag
+        )
+        if (
+            ("disconnect" in normalized or "error" in normalized)
+            and self._recording_state in {"preparing", "recording"}
+        ):
+            self._request_recording_stop(
+                send_device_stop=False, reason="serial transport lost"
+            )
 
         self._refresh_recording_button_states()
 
@@ -1044,6 +1271,10 @@ class MainWindow(QMainWindow):
         )
         self.serial_status_label.setText("Serial: Error")
         self._show_error_dialog("Serial Connection Error", f"{msg}\n\n{hint}")
+        if self._recording_state in {"preparing", "recording"}:
+            self._request_recording_stop(
+                send_device_stop=False, reason="serial error"
+            )
         # Also re-evaluate whether the recording buttons are enabled
         self._refresh_recording_button_states()
 
@@ -1056,6 +1287,13 @@ class MainWindow(QMainWindow):
         )
         self.recording_status_label.setText("Not Recording")
         self._show_error_dialog("Recording Error", f"{msg}\n\n{hint}")
+        if self._recording_state in {"preparing", "recording"}:
+            self._request_recording_stop(
+                send_device_stop=(
+                    self._serial_start_sent or self._device_run_active
+                ),
+                reason="recording error",
+            )
 
     @pyqtSlot()
     def _handle_serial_thread_finished(self):
@@ -1067,6 +1305,7 @@ class MainWindow(QMainWindow):
             self._serial_thread.deleteLater()
             self._serial_thread = None
             self._serial_start_sent = False
+            self._device_run_active = False
             self.top_ctrl.update_connection_status("Disconnected", False)
 
             # Immediately flip QAction back to “Connect BUTI Arduino Box”
@@ -1081,6 +1320,34 @@ class MainWindow(QMainWindow):
             )
 
         # Re‐evaluate “Start/Stop Recording” button states
+        self._refresh_recording_button_states()
+
+    @pyqtSlot()
+    def _handle_serial_stream_started(self):
+        """Begin a logical device run before its first sample is plotted."""
+
+        self._device_run_active = True
+        self.top_ctrl.set_run_state(True, connected=True)
+        if self.force_plot_widget is not None:
+            self.force_plot_widget.clear_plot()
+        self.statusBar().showMessage("New BUTI data run detected; plot cleared.", 3000)
+        self._refresh_recording_button_states()
+
+    @pyqtSlot(str)
+    def _handle_serial_stream_stopped(self, reason: str):
+        """React to natural silence without disconnecting the serial port."""
+
+        self._device_run_active = False
+        self._serial_start_sent = False
+        serial_ready = self._serial_thread is not None and self._serial_thread.isRunning()
+        self.top_ctrl.set_run_state(False, connected=serial_ready)
+        if self._recording_state in {"preparing", "recording"}:
+            self._request_recording_stop(
+                send_device_stop=False, reason=f"serial {reason}"
+            )
+        self.statusBar().showMessage(
+            f"BUTI data run complete ({reason}).", 5000
+        )
         self._refresh_recording_button_states()
 
     @pyqtSlot(float, int, float, int, float)
@@ -1123,22 +1390,14 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _toggle_recording(self):
         """Toggle recording on user request."""
-        recorder_running = (
-            self._recorder_thread is not None and self._recorder_thread.isRunning()
-        )
-        if recorder_running:
+        if self._recording_state in {"preparing", "recording"}:
             self._on_stop_recording()
-        else:
+        elif self._recording_state == "idle":
             self._on_start_recording()
-
 
     @pyqtSlot()
     def _on_start_recording(self):
-        """
-        Called when the user clicks ‘Start Recording’. Creates the next
-        BURST_ROOT/YYYY-MM-DD/FillN folder and starts a RecordingManager
-        writing there.
-        """
+        """Prepare a synchronized fill and start the device only when ready."""
         if not self._serial_thread or not self._serial_thread.isRunning():
             QMessageBox.warning(
                 self,
@@ -1147,155 +1406,202 @@ class MainWindow(QMainWindow):
             )
             self._refresh_recording_button_states()
             return
+        if self.camera_thread is None or not self.camera_thread.isRunning():
+            QMessageBox.warning(
+                self, "Camera", "Start the camera before starting a recording."
+            )
+            return
+        if self._device_run_active:
+            QMessageBox.warning(
+                self,
+                "Device Already Running",
+                "Stop the manual device run before starting a recording.",
+            )
+            return
+        if self._current_session_name is None:
+            self._change_recording_session()
+        if self._current_session_name is None:
+            return
 
-        outdir = get_next_fill_folder()
+        try:
+            outdir = get_next_fill_folder(self._current_session_name)
+        except (OSError, ValueError) as exc:
+            self._show_error_dialog(
+                "Recording Folder Error",
+                f"Unable to create the next Fill folder:\n{exc}",
+            )
+            return
         self._current_fill_folder = outdir
         self._last_recording_paths = {"tiff": None, "csv": None}
+        self._recording_had_output = False
         if hasattr(self, "playback_action"):
             self.playback_action.setEnabled(False)
-
         fill_folder_name = os.path.basename(outdir)
 
-        # Create the recording thread + worker exactly as before:
         self._recorder_thread = QThread(self)
-        self._recorder_worker = RecordingManager(output_dir=outdir)
+        self._recorder_worker = RecordingManager(
+            output_dir=outdir,
+            normalized_roi=self.camera_widget.normalized_roi(),
+            mirror_horizontal=self._mirror_horizontal,
+            mirror_vertical=self._mirror_vertical,
+        )
         self._recorder_worker.moveToThread(self._recorder_thread)
-
-        # 7) Wire up thread start → worker.start_recording()
         self._recorder_thread.started.connect(self._recorder_worker.start_recording)
-        #    and worker.finished → thread.quit() + worker.deleteLater()
-        self._recorder_worker.finished.connect(self._recorder_thread.quit, Qt.DirectConnection)
+        self._recorder_worker.finished.connect(self._recorder_thread.quit)
+        self._recorder_worker.finished.connect(self._on_recorder_worker_finished)
         self._recorder_worker.finished.connect(self._recorder_worker.deleteLater)
+        self._recorder_thread.finished.connect(self._on_recorder_thread_finished)
         self._recorder_thread.finished.connect(self._recorder_thread.deleteLater)
-
-        # When the worker reports that it is ready for acquisition, send the
-        # start command to the BUTI Arduino Box.
         self._recorder_worker.ready_for_acquisition.connect(self._on_recorder_ready)
+        self._recorder_worker.finalized.connect(self._on_recording_finalized)
         self._recorder_worker.error_occurred.connect(self._handle_recorder_error)
-
-        # 8) Hook camera + serial into the worker:
+        self._recorder_worker.warning_occurred.connect(
+            self._handle_recorder_warning
+        )
         self._serial_thread.data_ready.connect(self._recorder_worker.append_force)
         self.camera_thread.frame_ready.connect(self._recorder_worker.append_frame)
-
-        # 9) Kick off the recording thread:
+        self._recording_state = "preparing"
         self._recorder_thread.start()
-
-        # Immediately request the BUTI Arduino Box to begin streaming so that the user
-        # action directly triggers data capture.
-        self._serial_start_sent = self._send_serial_command(
-            SERIAL_CMD_START, enable_idle_timeout=True
-        )
-
-        # Notify CameraControlPanel that recording has started
         if self.camera_control_panel:
             try:
                 self.camera_control_panel.set_recording_state(True)
             except Exception:
                 log.exception("Failed to set camera recording state to True")
 
-        # 10) Update UI buttons (disable “Start” / enable “Stop”):
+        self.camera_info_panel.set_transform_controls_enabled(False)
+        self.device_combo.setEnabled(False)
+        self.resolution_combo.setEnabled(False)
+        self.btn_start_camera.setEnabled(False)
         self._refresh_recording_button_states()
-        self.recording_status_label.setText(f"Recording → {fill_folder_name}")
-        log.info(f"Recording started in {fill_folder_name}.")
+        self.recording_status_label.setText(f"Preparing → {fill_folder_name}")
+        log.info("Preparing recording in %s.", fill_folder_name)
 
     @pyqtSlot()
     def _on_recorder_ready(self):
         """Send the start command to the BUTI Arduino Box when recording setup is done."""
-        if not self._serial_start_sent:
-            self._serial_start_sent = self._send_serial_command(
-                SERIAL_CMD_START, enable_idle_timeout=True
+        if self._recording_state != "preparing":
+            return
+        self._serial_start_sent = self._send_serial_command(SERIAL_CMD_START)
+        if self._serial_start_sent:
+            self._recording_state = "recording"
+            self._device_run_active = True
+            self.top_ctrl.set_run_state(True, connected=True)
+            self.recording_status_label.setText(
+                f"Recording → {os.path.basename(self._current_fill_folder)}"
             )
+        else:
+            self._request_recording_stop(
+                send_device_stop=False, reason="unable to start device"
+            )
+        self._refresh_recording_button_states()
 
     @pyqtSlot()
     def _on_stop_recording(self):
-        """
-        Called when the user clicks ‘Stop Recording’. Sends the stop command
-        to the BUTI Arduino Box and requests the RecordingManager to finish once the
-        final sample and frame have been written.
-        """
-        # If there is no worker/thread, nothing to do.
-        if not self._recorder_worker or not self._recorder_thread:
+        self._request_recording_stop(send_device_stop=True, reason="user request")
+
+    def _request_recording_stop(self, *, send_device_stop: bool, reason: str):
+        if self._recording_state not in {"preparing", "recording"}:
+            return
+        if send_device_stop:
+            if self._send_serial_command(SERIAL_CMD_STOP):
+                self._device_run_active = False
+                self.top_ctrl.set_run_state(False, connected=True)
+        self._serial_start_sent = False
+        self._recording_state = "finalizing"
+        if self._recorder_worker is not None:
+            camera_active = self.camera_thread is not None and self.camera_thread.isRunning()
+            method = "request_stop" if camera_active else "stop_recording"
+            try:
+                QMetaObject.invokeMethod(
+                    self._recorder_worker, method, Qt.QueuedConnection
+                )
+            except RuntimeError:
+                log.debug("Recorder was already destroyed while finalizing")
+        self.recording_status_label.setText("Finalizing Recording…")
+        self._refresh_recording_button_states()
+        log.info("Stop recording requested (%s).", reason)
+
+    @pyqtSlot(str, str)
+    def _on_recording_finalized(self, csv_path: str, tiff_path: str):
+        self._recording_had_output = True
+        self._last_recording_paths = {"csv": csv_path, "tiff": tiff_path}
+        self._play_completion_sound()
+        self._prompt_rename_recording_pair()
+        if hasattr(self, "playback_action"):
+            self.playback_action.setEnabled(True)
+
+    def _prompt_rename_recording_pair(self):
+        csv_path = self._last_recording_paths.get("csv")
+        tiff_path = self._last_recording_paths.get("tiff")
+        if not csv_path or not tiff_path:
+            return
+        current_base = os.path.basename(csv_path)
+        if current_base.endswith("_force.csv"):
+            current_base = current_base[: -len("_force.csv")]
+        while True:
+            base_name, accepted = QInputDialog.getText(
+                self,
+                "Name Recording",
+                "Base name for both the CSV and TIFF:",
+                text=current_base,
+            )
+            if not accepted:
+                return
+            try:
+                renamed_csv, renamed_tiff = rename_recording_pair(
+                    csv_path, tiff_path, base_name
+                )
+            except (ValueError, FileNotFoundError, FileExistsError, OSError) as exc:
+                QMessageBox.warning(self, "Unable to Rename Recording", str(exc))
+                continue
+            self._last_recording_paths = {
+                "csv": renamed_csv,
+                "tiff": renamed_tiff,
+            }
             return
 
-        # Send stop command to the BUTI Arduino Box before disconnecting
-        self._send_serial_command(SERIAL_CMD_STOP, enable_idle_timeout=False)
-        self._serial_start_sent = False
+    @pyqtSlot(str)
+    def _handle_recorder_warning(self, message: str):
+        log.warning(message)
+        self.statusBar().showMessage(message, 10000)
 
-        # When the worker actually finishes, clean up our Python references and
-        # disconnect the data signals.
-        def _cleanup_recorder():
-            worker = self._recorder_worker
-            serial_thread = self._serial_thread
-            camera_thread = self.camera_thread
+    @pyqtSlot()
+    def _on_recorder_worker_finished(self):
+        worker = self.sender()
+        serial_thread = self._serial_thread
+        camera_thread = self.camera_thread
+        if serial_thread is not None and worker is not None:
+            try:
+                serial_thread.data_ready.disconnect(worker.append_force)
+            except (TypeError, RuntimeError):
+                pass
+        if camera_thread is not None and worker is not None:
+            try:
+                camera_thread.frame_ready.disconnect(worker.append_frame)
+            except (TypeError, RuntimeError):
+                pass
+        if self.camera_control_panel:
+            self.camera_control_panel.set_recording_state(False)
 
-            if (
-                serial_thread is not None
-                and worker is not None
-                and not sip.isdeleted(serial_thread)
-                and not sip.isdeleted(worker)
-            ):
-                try:
-                    serial_thread.data_ready.disconnect(worker.append_force)
-                except (TypeError, RuntimeError):
-                    pass
-
-            if (
-                camera_thread is not None
-                and worker is not None
-                and not sip.isdeleted(camera_thread)
-                and not sip.isdeleted(worker)
-            ):
-                try:
-                    camera_thread.frame_ready.disconnect(worker.append_frame)
-                except (TypeError, RuntimeError):
-                    pass
-            # At this point, worker has finished and thread has quit.
-            self._last_recording_paths["tiff"] = getattr(
-                self._recorder_worker, "_tiff_path", None
-            )
-            self._last_recording_paths["csv"] = getattr(
-                self._recorder_worker, "_csv_path", None
-            )
-            if hasattr(self, "playback_action"):
-                self.playback_action.setEnabled(True)
-            # We can delete both and clear our Python handles:
+    @pyqtSlot()
+    def _on_recorder_thread_finished(self):
+        thread = self.sender()
+        if thread is self._recorder_thread:
             self._recorder_thread = None
             self._recorder_worker = None
-            # If you need to update button states right away:
-            self._refresh_recording_button_states()
-            self._maybe_prompt_open_folder()
-
-        # Connect the worker’s finished → cleanup slot
-        self._recorder_worker.finished.connect(_cleanup_recorder)
-        # Also, when the thread actually quits, call deleteLater on both objects:
-        self._recorder_worker.finished.connect(self._recorder_worker.deleteLater)
-        self._recorder_thread.finished.connect(self._recorder_thread.deleteLater)
-
-        # Tell the worker to stop after receiving the final packet
-        # Check if the camera is still running. If not, bypass the frame-matching wait.
-        camera_active = self.camera_thread is not None and self.camera_thread.isRunning()
-
-        if camera_active:
-            QMetaObject.invokeMethod(
-                self._recorder_worker, "request_stop", Qt.QueuedConnection
-            )
-        else:
-            log.warning("Camera inactive during stop request. Forcing file closure.")
-            QMetaObject.invokeMethod(
-                self._recorder_worker, "stop_recording", Qt.QueuedConnection
-            )
-
-        # Notify CameraControlPanel that recording has stopped
-        if self.camera_control_panel:
-            try:
-                self.camera_control_panel.set_recording_state(False)
-            except Exception:
-                log.exception("Failed to set camera recording state to False")
-
-        # 4) Immediately update button states (the actual cleanup will happen in _cleanup_recorder)
-        self._refresh_recording_button_states()
+        self._recording_state = "idle"
         self.recording_status_label.setText("Not Recording")
-        log.info("Stop recording requested.")
+        self.camera_info_panel.set_transform_controls_enabled(True)
+        self.device_combo.setEnabled(True)
+        self.resolution_combo.setEnabled(True)
+        self.btn_start_camera.setEnabled(True)
+        self.camera_info_panel.set_roi_available(
+            self.camera_thread is not None and self.camera_thread.isRunning(),
+            self.camera_widget.normalized_roi() is not None,
+        )
+        self._refresh_recording_button_states()
+        if self._recording_had_output:
+            self._maybe_prompt_open_folder()
 
     def _refresh_recording_button_states(self):
         """
@@ -1304,20 +1610,25 @@ class MainWindow(QMainWindow):
         serial_ready = (
             self._serial_thread is not None and self._serial_thread.isRunning()
         )
-        recorder_running = (
-            self._recorder_thread is not None and self._recorder_thread.isRunning()
-        )
-
-        if recorder_running:
+        camera_ready = self.camera_thread is not None and self.camera_thread.isRunning()
+        if self._recording_state in {"preparing", "recording"}:
             self.recording_action.setIcon(self.icon_record_stop)
             self.recording_action.setText("Stop R&ecording")
             self.recording_action.setShortcut(Qt.CTRL | Qt.Key_T)
             self.recording_action.setEnabled(True)
+        elif self._recording_state == "finalizing":
+            self.recording_action.setIcon(self.icon_record_stop)
+            self.recording_action.setText("Finalizing Recording…")
+            self.recording_action.setEnabled(False)
         else:
             self.recording_action.setIcon(self.icon_record_start)
             self.recording_action.setText("Start &Recording")
             self.recording_action.setShortcut(Qt.CTRL | Qt.Key_R)
-            self.recording_action.setEnabled(serial_ready)
+            self.recording_action.setEnabled(
+                serial_ready and camera_ready and not self._device_run_active
+            )
+        if hasattr(self, "change_session_action"):
+            self.change_session_action.setEnabled(self._recording_state == "idle")
 
     # ─── Window Close Cleanup ──────────────────────────────────────────────────
     def closeEvent(self, event):
@@ -1512,11 +1823,3 @@ class MainWindow(QMainWindow):
 
         self.playback_window = PlaybackWindow(tiff_path, csv_path, parent=self)
         self.playback_window.showMaximized()
-
-
-
-
-
-
-
-
