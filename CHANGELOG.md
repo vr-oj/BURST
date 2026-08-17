@@ -42,4 +42,5 @@ BUTI Arduino Box and The Imaging Source camera workflow.
 - Uses a single `buti_app/VERSION` source for the application, Windows metadata,
   installer, and release validation.
 - Provides the established BURST PyInstaller/Inno Setup package, automated
-  tests, installer checksum, and tag-driven GitHub release workflow.
+  tests, installer checksum, and a repeatable local Windows release script for
+  manual GitHub uploads.

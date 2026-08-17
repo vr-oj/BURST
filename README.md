@@ -85,7 +85,7 @@ Key threads:
 ## Installation
 
 ### Windows Executable
-1. Download `BURST_Setup_<version>.exe` from the GitHub release or Actions artifact.
+1. Download `BURST_Setup_<version>.exe` from the GitHub release.
 2. Run the installer and follow the setup wizard.
 3. Install the IC4 SDK and GenTL Producer from The Imaging Source.
 4. Launch **BURST** from the Start menu or optional desktop shortcut.
@@ -115,33 +115,36 @@ remove that warning for an official public release.
    ```
 4. Install the IC4 SDK and GenTL Producer (required for DMK cameras).
 
-### Building a Windows Test Installer
+### Building a Windows Release Installer
 
 BURST uses one version source: `buti_app/VERSION`. The current version is
 `1.3.0`. Update only that file when preparing another release.
 
-To build the installer directly on Windows:
+Install the requirements and pinned PyInstaller version once:
 
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r buti_app\requirements.txt
 .venv\Scripts\python.exe -m pip install pyinstaller==6.21.0
-.venv\Scripts\python.exe -m unittest discover -s tests -v
-.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean BURST.spec
-iscc installer.iss
 ```
 
-The installer will be written to
-`installer_output\BURST_Setup_1.3.0.exe`.
+Install Inno Setup 6, then run the complete local release build:
 
-Once this workflow exists on the default branch, **Actions → Build Windows
-Installer → Run workflow** can also build any selected branch. A manual run
-creates a short-lived installable artifact without creating a GitHub release.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
+```
 
-After the build passes hardware testing, merge it into `main`, then create and
-push the matching tag (`v1.3.0`). The tag must point to the release commit and
-exactly match the application version with a leading `v`; the build will reject
-mismatches and a valid tag will create the GitHub release.
+The script checks the Python environment, runs all tests, builds BURST with the
+repository's PyInstaller spec, compiles the Inno Setup installer, and writes:
+
+- `installer_output\BURST_Setup_1.3.0.exe`
+- `installer_output\BURST_Setup_1.3.0.exe.sha256`
+
+BURST releases are built on the target Windows packaging computer and uploaded
+manually; GitHub Actions is not used. After the build passes hardware testing,
+merge the release commit into `main`, create the matching `v1.3.0` tag and
+GitHub release, paste the `1.3.0` section from `CHANGELOG.md`, and attach both
+files above.
 
 ---
 ## Running BURST
