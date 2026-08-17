@@ -42,6 +42,10 @@ from PyQt5.QtWidgets import (
     QGraphicsRectItem,
     QGraphicsItem,
     QMessageBox,
+    QFrame,
+    QGridLayout,
+    QListWidget,
+    QSizePolicy,
 )
 from tifffile import TiffFile, TiffWriter
 from PIL import Image
@@ -52,6 +56,8 @@ from utils.roi import (
     pixel_roi_to_bounds,
 )
 from utils.tiff_crop import CropCanceled, export_cropped_tiff
+from utils.recording_files import find_recording_csv_for_tiff
+from ui.style_constants import PANEL_STYLESHEET
 
 
 class OverlayItem(QGraphicsItem):
@@ -463,7 +469,7 @@ class PlaybackWindow(QMainWindow):
     def __init__(self, tiff_path=None, csv_path=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Playback")
-        self.resize(800, 600)
+        self.resize(1200, 800)
 
         self.frames = []
         self.forces = []
@@ -477,6 +483,7 @@ class PlaybackWindow(QMainWindow):
         self.csv_path = None
         self._crop_active = False
         self._batch_skipped = []
+        self._batch_source_paths = []
         self.current_frame = 0
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.next_frame)
@@ -494,7 +501,9 @@ class PlaybackWindow(QMainWindow):
         self.crop_progress.setVisible(False)
         self.play_btn = QPushButton("\u25b6 Play")
         self.play_btn.setCheckable(True)
+        self.play_btn.setProperty("cssClass", "primary")
         self.slider = QSlider(Qt.Horizontal)
+        self.slider.setProperty("cssClass", "controlSlider")
         self.slider.setTracking(False)
         self.slider.setEnabled(False)
         self.frame_label = QLabel("0/0")
@@ -502,22 +511,27 @@ class PlaybackWindow(QMainWindow):
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 1000)
         self.fps_spin.setValue(10)
+        self.fps_spin.setProperty("cssClass", "monoInput")
         self.fps_spin.valueChanged.connect(self.update_fps)
 
         self.font_spin = QSpinBox()
         self.font_spin.setRange(10, 200)
         self.font_spin.setValue(10)
+        self.font_spin.setProperty("cssClass", "monoInput")
         self.font_spin.valueChanged.connect(self._update_overlay)
 
         self.overlay_cb = QCheckBox("Show Overlay")
+        self.overlay_cb.setProperty("cssClass", "muted")
         self.overlay_cb.setChecked(True)
         self.overlay_cb.toggled.connect(self._update_overlay)
 
         self.roi_btn = QPushButton("Draw ROI")
         self.roi_btn.setObjectName("roiDrawButton")
         self.roi_btn.setCheckable(True)
+        self.roi_btn.setProperty("cssClass", "primary")
         self.roi_btn.setToolTip("Select, then drag over the image to define a crop")
         self.clear_roi_btn = QPushButton("Clear ROI")
+        self.clear_roi_btn.setProperty("cssClass", "ghost")
         self.roi_x_spin = QSpinBox()
         self.roi_y_spin = QSpinBox()
         self.roi_width_spin = QSpinBox()
@@ -531,69 +545,142 @@ class PlaybackWindow(QMainWindow):
             spin.setSuffix(" px")
             spin.setMinimumWidth(82)
             spin.setEnabled(False)
+            spin.setProperty("cssClass", "monoInput")
         self.roi_x_spin.setRange(0, 0)
         self.roi_y_spin.setRange(0, 0)
         self.roi_width_spin.setRange(1, 1)
         self.roi_height_spin.setRange(1, 1)
         self.apply_roi_btn = QPushButton("Apply ROI")
+        self.apply_roi_btn.setProperty("cssClass", "ghost")
         self.apply_roi_btn.setToolTip(
             "Apply these exact source-pixel coordinates to the ROI"
         )
         self.export_roi_btn = QPushButton("Export ROI PNG")
+        self.export_roi_btn.setProperty("cssClass", "ghost")
         self.export_roi_stack_btn = QPushButton("Export Cropped TIFF")
+        self.export_roi_stack_btn.setProperty("cssClass", "primary")
         self.export_roi_stack_btn.setToolTip(
             "Crop this ROI from every frame into a new TIFF stack"
         )
-        self.batch_export_roi_stack_btn = QPushButton("Batch Crop TIFFs…")
+        self.batch_export_roi_stack_btn = QPushButton("Crop Selected TIFFs")
+        self.batch_export_roi_stack_btn.setProperty("cssClass", "primary")
         self.batch_export_roi_stack_btn.setToolTip(
             "Apply these exact ROI coordinates to multiple TIFF recordings"
         )
 
         self.export_btn = QPushButton("💾 Export Overlay TIFF")
+        self.export_btn.setProperty("cssClass", "primary")
         self.snapshot_btn = QPushButton("🖼 Export Frame PNG")
+        self.snapshot_btn.setProperty("cssClass", "ghost")
 
-        controls_layout = QHBoxLayout()
-        controls_layout.setContentsMargins(4, 4, 4, 4)
-        controls_layout.setSpacing(6)
+        self.select_batch_tiffs_btn = QPushButton("Add TIFFs…")
+        self.select_batch_tiffs_btn.setProperty("cssClass", "ghost")
+        self.select_batch_tiffs_btn.setToolTip(
+            "Add recordings to the shared-ROI batch queue (maximum 5)"
+        )
+        self.clear_batch_tiffs_btn = QPushButton("Clear List")
+        self.clear_batch_tiffs_btn.setProperty("cssClass", "ghost")
+        self.batch_selection_label = QLabel("0 of 5 TIFFs selected")
+        self.batch_selection_label.setProperty("cssClass", "detailLabel")
+        self.batch_file_list = QListWidget()
+        self.batch_file_list.setProperty("cssClass", "batchList")
+        self.batch_file_list.setMaximumHeight(82)
+        self.batch_file_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.batch_file_list.setToolTip("Double-click a recording to remove it")
+
+        scrubber_card = QFrame()
+        scrubber_card.setProperty("cssClass", "panelCard")
+        controls_layout = QHBoxLayout(scrubber_card)
+        controls_layout.setContentsMargins(10, 8, 10, 8)
+        controls_layout.setSpacing(10)
         controls_layout.addWidget(self.play_btn)
         controls_layout.addWidget(self.slider, stretch=1)
         controls_layout.addWidget(self.frame_label)
 
-        options_layout = QHBoxLayout()
-        options_layout.setContentsMargins(4, 0, 4, 4)
-        options_layout.setSpacing(6)
-        options_layout.addWidget(QLabel("FPS:"))
-        options_layout.addWidget(self.fps_spin)
-        options_layout.addWidget(QLabel("Font:"))
-        options_layout.addWidget(self.font_spin)
-        options_layout.addWidget(self.overlay_cb)
-        options_layout.addStretch(1)
-        options_layout.addWidget(self.snapshot_btn)
-        options_layout.addWidget(self.export_btn)
+        playback_card = QFrame()
+        playback_card.setProperty("cssClass", "panelCard")
+        playback_layout = QVBoxLayout(playback_card)
+        playback_layout.setContentsMargins(12, 10, 12, 10)
+        playback_layout.setSpacing(8)
+        playback_title = QLabel("Playback & Export")
+        playback_title.setProperty("cssClass", "panelTitle")
+        playback_layout.addWidget(playback_title)
+        options_grid = QGridLayout()
+        options_grid.setHorizontalSpacing(8)
+        options_grid.setVerticalSpacing(6)
+        options_grid.addWidget(QLabel("Playback FPS"), 0, 0)
+        options_grid.addWidget(self.fps_spin, 0, 1)
+        options_grid.addWidget(QLabel("Overlay Font"), 1, 0)
+        options_grid.addWidget(self.font_spin, 1, 1)
+        options_grid.addWidget(self.overlay_cb, 2, 0, 1, 2)
+        playback_layout.addLayout(options_grid)
+        playback_actions = QHBoxLayout()
+        playback_actions.addWidget(self.snapshot_btn)
+        playback_actions.addWidget(self.export_btn)
+        playback_layout.addLayout(playback_actions)
 
-        roi_layout = QHBoxLayout()
-        roi_layout.setContentsMargins(4, 0, 4, 4)
-        roi_layout.setSpacing(6)
-        roi_layout.addWidget(QLabel("ROI:"))
-        roi_layout.addWidget(self.roi_btn)
-        roi_layout.addWidget(self.clear_roi_btn)
-        roi_layout.addWidget(QLabel("X:"))
-        roi_layout.addWidget(self.roi_x_spin)
-        roi_layout.addWidget(QLabel("Y:"))
-        roi_layout.addWidget(self.roi_y_spin)
-        roi_layout.addWidget(QLabel("Width:"))
-        roi_layout.addWidget(self.roi_width_spin)
-        roi_layout.addWidget(QLabel("Height:"))
-        roi_layout.addWidget(self.roi_height_spin)
-        roi_layout.addWidget(self.apply_roi_btn)
+        roi_card = QFrame()
+        roi_card.setProperty("cssClass", "panelCard")
+        roi_card_layout = QVBoxLayout(roi_card)
+        roi_card_layout.setContentsMargins(12, 10, 12, 10)
+        roi_card_layout.setSpacing(8)
+        roi_header = QHBoxLayout()
+        roi_title = QLabel("Shared ROI")
+        roi_title.setProperty("cssClass", "panelTitle")
+        roi_header.addWidget(roi_title)
+        roi_header.addStretch()
+        roi_hint = QLabel("Source-pixel coordinates")
+        roi_hint.setProperty("cssClass", "detailLabel")
+        roi_header.addWidget(roi_hint)
+        roi_card_layout.addLayout(roi_header)
+        roi_actions = QHBoxLayout()
+        roi_actions.setSpacing(6)
+        roi_actions.addWidget(self.roi_btn)
+        roi_actions.addWidget(self.clear_roi_btn)
+        roi_actions.addStretch()
+        roi_card_layout.addLayout(roi_actions)
+        roi_grid = QGridLayout()
+        roi_grid.setHorizontalSpacing(6)
+        for column, (label_text, spin) in enumerate(
+            (("X", self.roi_x_spin), ("Y", self.roi_y_spin),
+             ("Width", self.roi_width_spin), ("Height", self.roi_height_spin))
+        ):
+            roi_grid.addWidget(QLabel(label_text), 0, column)
+            roi_grid.addWidget(spin, 1, column)
+        roi_grid.addWidget(self.apply_roi_btn, 1, 4)
+        roi_card_layout.addLayout(roi_grid)
+        roi_exports = QHBoxLayout()
+        roi_exports.addStretch()
+        roi_exports.addWidget(self.export_roi_btn)
+        roi_exports.addWidget(self.export_roi_stack_btn)
+        roi_card_layout.addLayout(roi_exports)
 
-        roi_export_layout = QHBoxLayout()
-        roi_export_layout.setContentsMargins(4, 0, 4, 4)
-        roi_export_layout.setSpacing(6)
-        roi_export_layout.addStretch(1)
-        roi_export_layout.addWidget(self.export_roi_btn)
-        roi_export_layout.addWidget(self.export_roi_stack_btn)
-        roi_export_layout.addWidget(self.batch_export_roi_stack_btn)
+        batch_card = QFrame()
+        batch_card.setProperty("cssClass", "panelCard")
+        batch_layout = QVBoxLayout(batch_card)
+        batch_layout.setContentsMargins(12, 10, 12, 10)
+        batch_layout.setSpacing(8)
+        batch_header = QHBoxLayout()
+        batch_title = QLabel("Batch Crop")
+        batch_title.setProperty("cssClass", "panelTitle")
+        batch_header.addWidget(batch_title)
+        batch_header.addStretch()
+        batch_header.addWidget(self.batch_selection_label)
+        batch_layout.addLayout(batch_header)
+        batch_layout.addWidget(self.batch_file_list)
+        batch_actions = QHBoxLayout()
+        batch_actions.addWidget(self.select_batch_tiffs_btn)
+        batch_actions.addWidget(self.clear_batch_tiffs_btn)
+        batch_actions.addStretch()
+        batch_actions.addWidget(self.batch_export_roi_stack_btn)
+        batch_layout.addLayout(batch_actions)
+
+        tool_cards_layout = QHBoxLayout()
+        tool_cards_layout.setContentsMargins(0, 0, 0, 0)
+        tool_cards_layout.setSpacing(8)
+        tool_cards_layout.addWidget(playback_card, 2)
+        tool_cards_layout.addWidget(roi_card, 4)
+        tool_cards_layout.addWidget(batch_card, 3)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(4, 4, 4, 4)
@@ -601,10 +688,8 @@ class PlaybackWindow(QMainWindow):
         layout.addWidget(self.view, stretch=1)
         layout.addWidget(self.progress)
         layout.addWidget(self.crop_progress)
-        layout.addLayout(controls_layout)
-        layout.addLayout(options_layout)
-        layout.addLayout(roi_layout)
-        layout.addLayout(roi_export_layout)
+        layout.addWidget(scrubber_card)
+        layout.addLayout(tool_cards_layout)
 
         container = QWidget()
         container.setLayout(layout)
@@ -621,6 +706,9 @@ class PlaybackWindow(QMainWindow):
         self.export_roi_btn.clicked.connect(self.export_roi)
         self.export_roi_stack_btn.clicked.connect(self.export_roi_stack)
         self.batch_export_roi_stack_btn.clicked.connect(self.export_roi_stack_batch)
+        self.select_batch_tiffs_btn.clicked.connect(self.select_batch_tiffs)
+        self.clear_batch_tiffs_btn.clicked.connect(self.clear_batch_tiffs)
+        self.batch_file_list.itemDoubleClicked.connect(self._remove_batch_item)
         self.view.roi_changed.connect(self._on_roi_changed)
         self.view.roi_finished.connect(self._finish_roi_drawing)
 
@@ -629,25 +717,39 @@ class PlaybackWindow(QMainWindow):
         self.export_roi_btn.setEnabled(False)
         self.export_roi_stack_btn.setEnabled(False)
         self.batch_export_roi_stack_btn.setEnabled(False)
+        self.clear_batch_tiffs_btn.setEnabled(False)
+        self.setStyleSheet(PANEL_STYLESHEET)
 
-        if tiff_path and csv_path:
-            self.load_files(tiff_path, csv_path)
+        if tiff_path:
+            resolved_csv = csv_path or find_recording_csv_for_tiff(tiff_path)
+            if resolved_csv:
+                self.load_files(tiff_path, resolved_csv)
+            else:
+                self._show_missing_pair(tiff_path)
         else:
             self.pick_files()
 
     # ─── File Loading ─────────────────────────────────────────────────────
     def pick_files(self):
         tiff, _ = QFileDialog.getOpenFileName(
-            self, "Select TIFF", "", "TIFF files (*.tif *.tiff)"
+            self, "Open BURST TIFF Recording", "", "TIFF files (*.tif *.tiff)"
         )
         if not tiff:
             return
-        csv_path, _ = QFileDialog.getOpenFileName(
-            self, "Select CSV", "", "CSV files (*.csv)"
-        )
+        csv_path = find_recording_csv_for_tiff(tiff)
         if not csv_path:
+            self._show_missing_pair(tiff)
             return
         self.load_files(tiff, csv_path)
+
+    def _show_missing_pair(self, tiff_path):
+        QMessageBox.warning(
+            self,
+            "Paired CSV Not Found",
+            "BURST could not identify the synchronized CSV beside:\n\n"
+            f"{os.path.basename(tiff_path)}\n\n"
+            "Keep the matching *_force.csv in the same folder as the *_video.tif.",
+        )
 
     def load_files(self, tiff_path, csv_path):
         # Show progress bar and start worker thread to avoid blocking UI
@@ -663,6 +765,7 @@ class PlaybackWindow(QMainWindow):
         self.view.clear_roi()
         self.tiff_path = os.path.abspath(tiff_path)
         self.csv_path = os.path.abspath(csv_path)
+        self._set_batch_sources([self.tiff_path])
 
         self.loader_thread = QThread(self)
         self.loader = PlaybackLoader(tiff_path, csv_path)
@@ -681,6 +784,65 @@ class PlaybackWindow(QMainWindow):
     def _loader_thread_finished(self):
         self.loader = None
         self.loader_thread = None
+
+    def _set_batch_sources(self, paths):
+        """Replace the visible batch queue with up to five unique TIFF files."""
+
+        unique_paths = []
+        seen = set()
+        for path in paths:
+            absolute = os.path.abspath(path)
+            if not absolute.lower().endswith((".tif", ".tiff")):
+                continue
+            key = os.path.normcase(os.path.realpath(absolute))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_paths.append(absolute)
+
+        overflow = max(0, len(unique_paths) - 5)
+        self._batch_source_paths = unique_paths[:5]
+        self.batch_file_list.clear()
+        for path in self._batch_source_paths:
+            self.batch_file_list.addItem(os.path.basename(path))
+            self.batch_file_list.item(self.batch_file_list.count() - 1).setToolTip(path)
+        count = len(self._batch_source_paths)
+        self.batch_selection_label.setText(f"{count} of 5 TIFFs selected")
+        self.batch_file_list.setToolTip("\n".join(self._batch_source_paths))
+        self.clear_batch_tiffs_btn.setEnabled(bool(count) and not self._crop_is_running())
+        self._refresh_roi_controls()
+        return overflow
+
+    def select_batch_tiffs(self):
+        """Add TIFF recordings to the shared-ROI queue, capped at five."""
+
+        start_dir = os.path.dirname(self.tiff_path) if self.tiff_path else ""
+        source_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Add TIFF Recordings for Shared-ROI Batch Crop (Maximum 5)",
+            start_dir,
+            "TIFF files (*.tif *.tiff)",
+        )
+        if not source_paths:
+            return False
+        overflow = self._set_batch_sources(self._batch_source_paths + source_paths)
+        if overflow:
+            QMessageBox.information(
+                self,
+                "Five-File Limit",
+                f"The first five unique TIFF recordings were kept; {overflow} additional file(s) were not added.",
+            )
+        return True
+
+    def clear_batch_tiffs(self):
+        self._set_batch_sources([])
+
+    def _remove_batch_item(self, item):
+        row = self.batch_file_list.row(item)
+        if 0 <= row < len(self._batch_source_paths):
+            paths = list(self._batch_source_paths)
+            paths.pop(row)
+            self._set_batch_sources(paths)
 
     def _update_progress(self, current, total):
         self.progress.setMaximum(total)
@@ -1089,7 +1251,12 @@ class PlaybackWindow(QMainWindow):
             spin.setEnabled(has_frames and not busy)
         self.export_roi_btn.setEnabled(has_roi and not busy)
         self.export_roi_stack_btn.setEnabled(has_roi and not busy)
+        # Keep this available with a valid ROI: an empty queue is populated by
+        # the capped five-TIFF picker when the user clicks the action.
         self.batch_export_roi_stack_btn.setEnabled(has_roi and not busy)
+        self.select_batch_tiffs_btn.setEnabled(not busy and len(self._batch_source_paths) < 5)
+        self.clear_batch_tiffs_btn.setEnabled(bool(self._batch_source_paths) and not busy)
+        self.batch_file_list.setEnabled(not busy)
 
     def _on_roi_changed(self, _rect):
         self._refresh_roi_controls()
@@ -1210,15 +1377,11 @@ class PlaybackWindow(QMainWindow):
             self.statusBar().showMessage("Draw or apply an ROI first", 2000)
             return
 
-        start_dir = os.path.dirname(self.tiff_path) if self.tiff_path else ""
-        source_paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select TIFF Recordings to Batch Crop",
-            start_dir,
-            "TIFF files (*.tif *.tiff)",
-        )
+        source_paths = list(self._batch_source_paths[:5])
         if not source_paths:
-            return
+            if not self.select_batch_tiffs():
+                return
+            source_paths = list(self._batch_source_paths[:5])
 
         jobs = []
         skipped = []

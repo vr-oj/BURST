@@ -9,27 +9,28 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QGridLayout,
     QLabel,
-    QComboBox,
     QPushButton,
     QCheckBox,
+    QSizePolicy,
 )
 
 from ..style_constants import PANEL_STYLESHEET
-from ..widgets.metric_card import MetricCard
 
 EM_DASH = "\u2014"
 
 
 class CameraInfoPanel(QWidget):
-    """Card-styled camera overview panel for the Camera tab."""
+    """Visible image controls, orientation, and camera status card."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
         self._frame_count = 0
         self._fps_value: Optional[float] = None
+        self._resolution_text: Optional[str] = None
         self._status_text = "Disconnected"
         self._has_roi = False
+        self._embedded_control_panel = None
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -37,11 +38,12 @@ class CameraInfoPanel(QWidget):
 
         panel = QFrame(self)
         panel.setProperty("cssClass", "panelCard")
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         root_layout.addWidget(panel)
 
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(16, 16, 16, 16)
-        panel_layout.setSpacing(8)
+        panel_layout.setContentsMargins(12, 10, 12, 10)
+        panel_layout.setSpacing(6)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -50,114 +52,82 @@ class CameraInfoPanel(QWidget):
         title = QLabel("Camera")
         title.setProperty("cssClass", "panelTitle")
         header.addWidget(title)
-        header.addStretch()
 
         self.status_badge = QLabel()
         self.status_badge.setProperty("cssClass", "statusBadge")
-        self.status_badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.status_badge.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.status_badge.setTextFormat(Qt.RichText)
         header.addWidget(self.status_badge)
+        header.addStretch()
+
+        self.status_message = QLabel("Waiting for camera…")
+        self.status_message.setProperty("cssClass", "detailValue")
+        self.status_message.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        header.addWidget(self.status_message)
+
+        self.stream_details = QLabel(EM_DASH)
+        self.stream_details.setProperty("cssClass", "detailValue")
+        self.stream_details.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        header.addWidget(self.stream_details)
 
         panel_layout.addLayout(header)
-
-        hero_row = QHBoxLayout()
-        hero_row.setContentsMargins(0, 0, 0, 0)
-        hero_row.setSpacing(12)
-
-        self.fps_card = MetricCard("FPS")
-        self.frame_card = MetricCard("Frame")
-        self.resolution_card = MetricCard("Resolution", uppercase_label=False)
-
-        hero_row.addWidget(self.fps_card)
-        hero_row.addWidget(self.frame_card)
-        hero_row.addWidget(self.resolution_card)
-        panel_layout.addLayout(hero_row)
         panel_layout.addWidget(self._create_divider())
 
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(8)
-        grid.setColumnStretch(1, 1)
-        panel_layout.addLayout(grid)
+        self.advanced_controls = QWidget()
+        controls_layout = QVBoxLayout(self.advanced_controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
 
-        label_width = 132
+        controls_header = QLabel("IMAGE SETTINGS")
+        controls_header.setProperty("cssClass", "microLabel")
+        controls_layout.addWidget(controls_header)
+        self.embedded_controls_layout = QVBoxLayout()
+        self.embedded_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.embedded_controls_layout.setSpacing(0)
+        controls_layout.addLayout(self.embedded_controls_layout)
+        panel_layout.addWidget(self.advanced_controls)
 
-        device_label = QLabel("Device")
-        device_label.setProperty("cssClass", "detailLabel")
-        device_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        device_label.setFixedWidth(label_width)
-        grid.addWidget(device_label, 0, 0)
+        panel_layout.addWidget(self._create_divider())
 
-        self.device_combo = QComboBox()
-        self.device_combo.setProperty("cssClass", "monoInput")
-        grid.addWidget(self.device_combo, 0, 1)
+        transform_grid = QGridLayout()
+        transform_grid.setContentsMargins(0, 0, 0, 0)
+        transform_grid.setHorizontalSpacing(8)
+        transform_grid.setVerticalSpacing(6)
+        transform_grid.setColumnStretch(3, 1)
+        panel_layout.addLayout(transform_grid)
 
-        resolution_label = QLabel("Resolution")
-        resolution_label.setProperty("cssClass", "detailLabel")
-        resolution_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        resolution_label.setFixedWidth(label_width)
-        grid.addWidget(resolution_label, 1, 0)
-
-        resolution_row = QHBoxLayout()
-        resolution_row.setContentsMargins(0, 0, 0, 0)
-        resolution_row.setSpacing(8)
-
-        resolution_widget = QWidget()
-        resolution_widget.setLayout(resolution_row)
-
-        self.resolution_combo = QComboBox()
-        self.resolution_combo.setProperty("cssClass", "monoInput")
-        resolution_row.addWidget(self.resolution_combo, 1)
-
-        resolution_row.addStretch()
-
-        self.start_button = QPushButton("Start Camera")
-        self.start_button.setProperty("cssClass", "primary")
-        resolution_row.addWidget(self.start_button)
-
-        grid.addWidget(resolution_widget, 1, 1)
-
-        transform_label = QLabel("View / Recording")
+        transform_label = QLabel("Orientation")
         transform_label.setProperty("cssClass", "detailLabel")
         transform_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        transform_label.setFixedWidth(label_width)
-        grid.addWidget(transform_label, 2, 0)
-
-        transform_row = QHBoxLayout()
-        transform_row.setContentsMargins(0, 0, 0, 0)
-        transform_row.setSpacing(8)
-        transform_widget = QWidget()
-        transform_widget.setLayout(transform_row)
+        transform_label.setFixedWidth(92)
+        transform_grid.addWidget(transform_label, 0, 0)
 
         self.mirror_horizontal_cb = QCheckBox("Flip Left/Right")
         self.mirror_vertical_cb = QCheckBox("Flip Up/Down")
+        self.mirror_horizontal_cb.setProperty("cssClass", "muted")
+        self.mirror_vertical_cb.setProperty("cssClass", "muted")
+        transform_help = (
+            "Applies to the live preview and new TIFF recordings for this app "
+            "session. Camera orientation starts unflipped each time BURST opens."
+        )
+        self.mirror_horizontal_cb.setToolTip(transform_help)
+        self.mirror_vertical_cb.setToolTip(transform_help)
         self.roi_button = QPushButton("Draw ROI")
         self.roi_button.setProperty("cssClass", "ghost")
         self.roi_button.setEnabled(False)
         self.clear_roi_button = QPushButton("Clear ROI")
         self.clear_roi_button.setProperty("cssClass", "ghost")
         self.clear_roi_button.setEnabled(False)
-        transform_row.addWidget(self.mirror_horizontal_cb)
-        transform_row.addWidget(self.mirror_vertical_cb)
-        transform_row.addWidget(self.roi_button)
-        transform_row.addWidget(self.clear_roi_button)
-        transform_row.addStretch()
-        grid.addWidget(transform_widget, 2, 1)
+        transform_grid.addWidget(self.mirror_horizontal_cb, 0, 1)
+        transform_grid.addWidget(self.mirror_vertical_cb, 0, 2)
 
-        panel_layout.addWidget(self._create_divider())
-
-        status_row = QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.setSpacing(8)
-
-        self.status_message = QLabel("Waiting for camera…")
-        self.status_message.setProperty("cssClass", "detailValue")
-        self.status_message.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        status_row.addWidget(self.status_message)
-        status_row.addStretch()
-
-        panel_layout.addLayout(status_row)
+        roi_label = QLabel("Recording ROI")
+        roi_label.setProperty("cssClass", "detailLabel")
+        roi_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        roi_label.setFixedWidth(92)
+        transform_grid.addWidget(roi_label, 1, 0)
+        transform_grid.addWidget(self.roi_button, 1, 1)
+        transform_grid.addWidget(self.clear_roi_button, 1, 2)
 
         self.setStyleSheet(PANEL_STYLESHEET)
         self.update_status("Disconnected")
@@ -173,9 +143,19 @@ class CameraInfoPanel(QWidget):
     def reset_metrics(self) -> None:
         self._frame_count = 0
         self._fps_value = None
-        self.fps_card.set_value(EM_DASH)
-        self.frame_card.set_value(EM_DASH)
-        self.resolution_card.set_value(EM_DASH)
+        self._resolution_text = None
+        self._refresh_stream_details()
+
+    def set_control_panel(self, panel: QWidget) -> None:
+        """Embed the hardware image controls into this single camera card."""
+
+        if self._embedded_control_panel is panel:
+            return
+        if self._embedded_control_panel is not None:
+            self.embedded_controls_layout.removeWidget(self._embedded_control_panel)
+        self._embedded_control_panel = panel
+        panel.setParent(self)
+        self.embedded_controls_layout.addWidget(panel)
 
     def update_status(self, text: str, *, state: Optional[str] = None) -> None:
         state = (state or "").lower()
@@ -209,14 +189,13 @@ class CameraInfoPanel(QWidget):
         self.status_message.setText(message or EM_DASH)
 
     def set_fps(self, value: Optional[float], unit: str = "fps") -> None:
+        del unit
         self._fps_value = value
-        formatted = self._format_value(value, unit=unit, precision=1)
-        self.fps_card.set_value(formatted)
+        self._refresh_stream_details()
 
     def set_frame_count(self, count: int) -> None:
         self._frame_count = max(0, int(count))
-        formatted = self._format_value(self._frame_count, formatter=lambda v: f"{int(v):,}")
-        self.frame_card.set_value(formatted)
+        self._refresh_stream_details()
 
     def increment_frame_count(self) -> int:
         self._frame_count += 1
@@ -227,11 +206,18 @@ class CameraInfoPanel(QWidget):
         return self._frame_count
 
     def set_resolution(self, text: Optional[str]) -> None:
-        if not text:
-            self.resolution_card.set_value(EM_DASH)
-        else:
-            safe_text = html.escape(text)
-            self.resolution_card.set_value(safe_text)
+        self._resolution_text = text or None
+        self._refresh_stream_details()
+
+    def _refresh_stream_details(self) -> None:
+        details = []
+        if self._resolution_text:
+            details.append(self._resolution_text)
+        if self._fps_value is not None:
+            details.append(f"{float(self._fps_value):.1f} fps")
+        if self._frame_count:
+            details.append(f"Frame {self._frame_count:,}")
+        self.stream_details.setText("  •  ".join(details) if details else EM_DASH)
 
     def status_text(self) -> str:
         return self._status_text
@@ -249,33 +235,3 @@ class CameraInfoPanel(QWidget):
             enabled and self._status_text == "Connected",
             self._has_roi,
         )
-
-    def _format_value(
-        self,
-        value: Optional[float],
-        *,
-        unit: str = "",
-        precision: Optional[int] = None,
-        formatter=None,
-    ) -> str:
-        if value is None:
-            return EM_DASH
-
-        try:
-            if formatter is not None:
-                value_text = formatter(value)
-            elif precision is not None:
-                value_text = f"{float(value):.{precision}f}"
-            else:
-                value_text = str(value)
-        except Exception:
-            return EM_DASH
-
-        safe_value = html.escape(value_text)
-        if unit:
-            safe_unit = html.escape(unit)
-            return (
-                f"{safe_value}<span style='opacity:0.8;font-size:0.82em;'> "
-                f"{safe_unit}</span>"
-            )
-        return safe_value

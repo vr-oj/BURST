@@ -22,8 +22,9 @@ log = logging.getLogger(__name__)
 
 
 class CameraControlPanel(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, embedded=False):
         super().__init__(parent)
+        self._embedded = bool(embedded)
         self.grabber = None
         self.is_recording = False
         self._exp_scale = 1
@@ -40,25 +41,30 @@ class CameraControlPanel(QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        panel = QFrame(self)
-        panel.setProperty("cssClass", "panelCard")
-        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        panel = QWidget(self) if self._embedded else QFrame(self)
+        if not self._embedded:
+            panel.setProperty("cssClass", "panelCard")
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         root_layout.addWidget(panel)
 
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(16, 16, 16, 16)
+        if self._embedded:
+            panel_layout.setContentsMargins(0, 0, 0, 0)
+        else:
+            panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(8)
 
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(8)
+        if not self._embedded:
+            header_row = QHBoxLayout()
+            header_row.setContentsMargins(0, 0, 0, 0)
+            header_row.setSpacing(8)
 
-        title_label = QLabel("Camera Controls")
-        title_label.setProperty("cssClass", "panelTitle")
-        header_row.addWidget(title_label)
-        header_row.addStretch()
-        panel_layout.addLayout(header_row)
-        panel_layout.addWidget(self._create_divider())
+            title_label = QLabel("Camera Controls")
+            title_label.setProperty("cssClass", "panelTitle")
+            header_row.addWidget(title_label)
+            header_row.addStretch()
+            panel_layout.addLayout(header_row)
+            panel_layout.addWidget(self._create_divider())
 
         control_grid = QGridLayout()
         control_grid.setContentsMargins(0, 0, 0, 0)
@@ -67,7 +73,7 @@ class CameraControlPanel(QWidget):
         control_grid.setColumnStretch(1, 1)
         panel_layout.addLayout(control_grid)
 
-        self._label_width = 132
+        self._label_width = 96 if self._embedded else 132
 
         # Exposure
         self.exposure_spin = QDoubleSpinBox()
@@ -157,7 +163,8 @@ class CameraControlPanel(QWidget):
         self.pf_combo.currentIndexChanged.connect(self._on_pf_changed)
         self._add_field_row(control_grid, 3, "Pixel Format", self.pf_combo)
 
-        panel_layout.addStretch()
+        if not self._embedded:
+            panel_layout.addStretch()
         self.setStyleSheet(PANEL_STYLESHEET)
 
     def _create_divider(self) -> QFrame:

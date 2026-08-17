@@ -6,13 +6,13 @@
 ## Quick Start
 
 1. **Connect BUTI Arduino Box** – Select the BUTI Arduino Box COM port and click **Connect BUTI Arduino Box**.
-2. **Set Up Camera** – Choose camera and resolution, then click **Start Camera**.
-3. **Adjust Exposure/Gain** – Use the camera controls to fine-tune settings.
+2. **Set Up Camera** – Choose the camera and resolution from the main toolbar, then click **Start Camera**.
+3. **Adjust Exposure/Gain** – Use the always-visible **Camera Settings** card above the live camera to fine-tune the full-width controls.
 4. **Zero BURST** – Ensure the force reading is zeroed before recording.
 5. **Choose a Session** – Select or create the session that will contain its Fill folders.
-6. **Start Recording** – Click **Start Recording** to begin synchronized acquisition.
-7. **Finish Recording** – BURST stops automatically when device data ends, plays a completion chime, and offers one name for the CSV/TIFF pair.
-8. **Playback & Export** – Open **Playback** to review the TIFF stack, overlay force data, and export frames.
+6. **Start Recording** – Click the prominent red **Start Recording** button in the BUTI status strip to begin synchronized acquisition.
+7. **Finish Recording** – BURST stops automatically when device data ends, plays a completion chime, offers one name for the CSV/TIFF pair, and then optionally opens its folder.
+8. **Playback & Export** – Open **Playback** and select the TIFF; BURST finds its paired CSV automatically so you can review the stack, overlay force data, and export frames.
 
 ---
 ## Features
@@ -45,14 +45,19 @@
   selection, exporting annotated frames, and cropping an ROI across the
   complete TIFF recording without changing the original recording or its
   synchronized CSV data. The same `X`, `Y`, `Width`, and `Height` can be
-  batch-applied to multiple runs.
+  batch-applied to a visible queue of up to five TIFF runs.
 - Playback opens large TIFF stacks with bounded, on-demand frame and preview
   caches instead of expanding and pre-rendering the complete recording in RAM.
 - A live ROI can also be selected before recording. Its source pixels are saved
   without resampling, and independent left/right and up/down flips apply to both
-  the preview and TIFF output.
+  the preview and TIFF output. Camera orientation starts unflipped on every app
+  launch so a transform from an earlier session cannot silently carry over.
 - A bundled completion chime is enabled by default and can be muted from the
   **Acquisition** menu.
+- BURST silently checks the official GitHub Releases page after startup. A
+  notification appears only when a newer version is available and links to the
+  official installer download. **Help → Check for Updates…** runs the same
+  check manually; offline automatic checks remain silent.
 
 ---
 ## Under the Hood
@@ -85,6 +90,10 @@ Key threads:
 3. Install the IC4 SDK and GenTL Producer from The Imaging Source.
 4. Launch **BURST** from the Start menu or optional desktop shortcut.
 
+Installed builds check for newer GitHub releases automatically without delaying
+camera or serial startup. BURST never downloads or installs an update without
+the user opening the official release page.
+
 The current installer is not code-signed, so Windows SmartScreen may display an
 unknown-publisher warning. An Authenticode signing certificate is required to
 remove that warning for an official public release.
@@ -92,8 +101,8 @@ remove that warning for an official public release.
 ### From Source
 1. Clone the repository:
    ```bash
-   git clone https://github.com/vr-oj/BUTI-acquisition.git
-   cd BUTI-acquisition/buti_app
+   git clone https://github.com/vr-oj/BURST.git
+   cd BURST
    ```
 2. Create a virtual environment:
    ```bash
@@ -101,8 +110,8 @@ remove that warning for an official public release.
    .venv\Scripts\activate  # Windows
    ```
 3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
+   ```powershell
+   .venv\Scripts\python.exe -m pip install -r buti_app\requirements.txt
    ```
 4. Install the IC4 SDK and GenTL Producer (required for DMK cameras).
 
@@ -138,8 +147,8 @@ mismatches and a valid tag will create the GitHub release.
 ## Running BURST
 
 1. Launch the app:
-   ```bash
-   python buti_app.py
+   ```powershell
+   .venv\Scripts\python.exe buti_app\buti_app.py
    ```
 2. Connect the BUTI Arduino Box:
    - Select the BUTI Arduino Box COM port (e.g., COM8) and click **Connect BUTI Arduino Box**.
@@ -154,14 +163,19 @@ mismatches and a valid tag will create the GitHub release.
 5. Stop recording:
    - Let the device run finish naturally, or use **Acquisition → Stop Recording**
      / **Ctrl+T**. Files are finalized automatically, a completion sound plays,
-     and BURST offers to rename the CSV/TIFF pair.
+     and BURST offers to rename the CSV/TIFF pair before asking whether to open
+     its folder.
 6. Crop a recording (optional):
-   - Open the recording in **Playback**, select **Draw ROI** or enter the exact
-     source-pixel `X`, `Y`, `Width`, and `Height`, then choose **Apply ROI**.
-   - Choose **Export Cropped TIFF** for the open recording, or **Batch Crop
-     TIFFs…** to apply those identical bounds to several runs. Batch results are
-     saved beside each source as `<original>_cropped.tif`; existing results are
-     skipped. Original TIFFs and synchronized CSV files remain intact.
+   - Open the recording in **Playback** and choose its TIFF. BURST automatically
+     identifies the neighboring `<name>_force.csv` paired with
+     `<name>_video.tif`.
+   - Select **Draw ROI** or enter the exact source-pixel `X`, `Y`, `Width`, and
+     `Height`, then choose **Apply ROI**.
+   - Choose **Export Cropped TIFF** for the open recording, or add up to five
+     TIFFs to **Batch Crop** and choose **Crop Selected TIFFs** to apply the
+     shared bounds. Batch results are saved beside each source as
+     `<original>_cropped.tif`; existing results are skipped. Original TIFFs and
+     synchronized CSV files remain intact.
 
 ---
 ## Troubleshooting

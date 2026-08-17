@@ -182,6 +182,19 @@ class RoiDrawingInteractionTests(unittest.TestCase):
                 with TiffFile(output) as cropped:
                     self.assertEqual(tuple(cropped.pages[0].shape), (5, 5))
 
+    def test_batch_queue_is_visible_unique_and_capped_at_five(self):
+        window = PlaybackWindowWithoutFilePicker()
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = [str(Path(tmp) / f"run{index}.tif") for index in range(6)]
+            overflow = window._set_batch_sources(paths + [paths[0]])
+
+            self.assertEqual(overflow, 1)
+            self.assertEqual(len(window._batch_source_paths), 5)
+            self.assertEqual(window.batch_file_list.count(), 5)
+            self.assertEqual(window.batch_selection_label.text(), "5 of 5 TIFFs selected")
+            self.assertFalse(window.select_batch_tiffs_btn.isEnabled())
+        window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

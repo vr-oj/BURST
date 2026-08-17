@@ -119,6 +119,7 @@ SERIAL_COMMANDS = {
 }
 
 APP_NAME = "BURST"
+RELEASES_URL = "https://github.com/vr-oj/BURST/releases/latest"
 ABOUT_TEXT = f"""
 <strong>{APP_NAME} v{APP_VERSION}</strong>
 <p>BURST stands for BUTI Uniaxial Recording of Strain &amp; Tension.</p>

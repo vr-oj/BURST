@@ -32,11 +32,11 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QMessageBox,
     QSizePolicy,
-    QTabWidget,
     QDoubleSpinBox,
     QCheckBox,
     QHBoxLayout,
     QInputDialog,
+    QSplitter,
 )
 from PyQt5.QtCore import (
     Qt,
@@ -62,8 +62,6 @@ from utils.app_settings import (
     SETTING_LAST_CAMERA_INDEX,
     SETTING_RESULTS_DIR,
     SETTING_OPEN_FOLDER_PROMPT,
-    SETTING_MIRROR_HORIZONTAL,
-    SETTING_MIRROR_VERTICAL,
     SETTING_COMPLETION_SOUND,
 )
 import utils.config as config
@@ -76,6 +74,7 @@ from utils.config import (
     DEFAULT_VIDEO_EXTENSION,
     DEFAULT_VIDEO_CODEC,
     ABOUT_TEXT,
+    RELEASES_URL,
     PLOT_DEFAULT_Y_MIN,
     PLOT_DEFAULT_Y_MAX,
     SERIAL_CMD_START,
@@ -86,11 +85,13 @@ from utils.config import (
 )
 from utils.path_helpers import get_next_fill_folder, list_session_names, resource_path
 from utils.recording_files import rename_recording_pair, validate_path_component
+from utils.update_checker import UpdateChecker
 from ui.canvas.qtcamera_widget import QtCameraWidget
 from ui.control_panels.camera_control_panel import CameraControlPanel
 from ui.control_panels.camera_info_panel import CameraInfoPanel
 from ui.control_panels.top_control_panel import TopControlPanel
 from ui.control_panels.plot_control_panel import PlotControlPanel
+from ui.style_constants import PANEL_STYLESHEET
 from ui.canvas.force_plot_widget import ForcePlotWidget
 
 from threads.serial_thread import SerialThread
@@ -124,12 +125,15 @@ class MainWindow(QMainWindow):
             load_app_setting(SETTING_COMPLETION_SOUND, True)
         )
         self._completion_sound_effect = None
-        self._mirror_horizontal = bool(
-            load_app_setting(SETTING_MIRROR_HORIZONTAL, False)
-        )
-        self._mirror_vertical = bool(
-            load_app_setting(SETTING_MIRROR_VERTICAL, False)
-        )
+        self.update_checker = None
+        self._update_check_manual = False
+        self._update_check_found = False
+        self._update_check_failed = False
+        self._closing = False
+        # Camera orientation is deliberately scoped to this app run. A transform
+        # chosen for one setup must not silently change the next live preview.
+        self._mirror_horizontal = False
+        self._mirror_vertical = False
 
         # Camera‐related
         self.device_combo = None
@@ -143,6 +147,7 @@ class MainWindow(QMainWindow):
 
         # Plot controls
         self.plot_control_panel = None
+        self.workspace_splitter = None
 
         # Top control (BUTI Arduino Box status)
         self.top_ctrl = None
@@ -194,6 +199,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} - v{APP_VERSION}")
         log.info("MainWindow initialized.")
         self.showMaximized()
+        QTimer.singleShot(0, self._equalize_workspace_panels)
+        QTimer.singleShot(250, self._equalize_workspace_panels)
 
     # ─── UI Builders ────────────────────────────────────────────────────────
 
@@ -275,8 +282,8 @@ class MainWindow(QMainWindow):
 
     def _build_central_widget_layout(self):
         """
-        Top row: control ribbon with Camera | BUTI Arduino Box | Plot Controls.
-        Bottom row: [QtCameraWidget (live)] | [ForcePlotWidget (live plot)]
+        Top: shallow, full-width BUTI status and command strip.
+        Bottom: resizable Camera and Plot workspaces, each with local controls.
         """
         self.camera_widget = QtCameraWidget(self)
 
@@ -285,28 +292,40 @@ class MainWindow(QMainWindow):
         main_vlay.setContentsMargins(4, 4, 4, 4)
         main_vlay.setSpacing(6)
 
-        # ─── Top Row (Control Ribbon) ─────────────────────────────────────
-        top_row_widget = QWidget()
-        top_row_lay = QHBoxLayout(top_row_widget)
-        top_row_lay.setContentsMargins(0, 0, 0, 0)
-        top_row_lay.setSpacing(10)
+        # ─── Global BUTI status strip ─────────────────────────────────────
+        self.top_ctrl = TopControlPanel(self)
+        self.top_ctrl.zero_requested.connect(self._on_zero_burst)
+        self.top_ctrl.start_requested.connect(self._on_start_pump)
+        self.top_ctrl.stop_requested.connect(self._on_stop_pump)
+        self.top_ctrl.reset_requested.connect(self._on_reset_burst)
+        self.top_ctrl.step_requested.connect(self._on_step)
+        self.top_ctrl.record_requested.connect(self._toggle_recording)
+        main_vlay.addWidget(self.top_ctrl, stretch=0)
 
-        # Camera Control Tabs (Camera & Controls)
-        self.camera_tabs = QTabWidget()
-        self.camera_tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        # ─── Camera workspace ─────────────────────────────────────────────
+        self.workspace_splitter = QSplitter(Qt.Horizontal, central)
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.workspace_splitter.setHandleWidth(6)
+
+        camera_workspace = QWidget()
+        camera_workspace.setObjectName("CameraWorkspace")
+        camera_layout = QVBoxLayout(camera_workspace)
+        camera_layout.setContentsMargins(0, 0, 0, 0)
+        camera_layout.setSpacing(6)
 
         self.camera_info_panel = CameraInfoPanel(self)
-        self.device_combo = self.camera_info_panel.device_combo
-        self.device_combo.addItem("Select Device…", None)
+        self.device_combo = QComboBox(self)
+        self.device_combo.addItem("Choose camera…", None)
         self.device_combo.currentIndexChanged.connect(self._on_device_selected)
 
-        self.resolution_combo = self.camera_info_panel.resolution_combo
-        self.resolution_combo.addItem("Select Resolution…", None)
+        self.resolution_combo = QComboBox(self)
+        self.resolution_combo.addItem("Choose resolution…", None)
         self.resolution_combo.currentIndexChanged.connect(
             self._on_camera_configuration_changed
         )
 
-        self.btn_start_camera = self.camera_info_panel.start_button
+        self.btn_start_camera = QPushButton("Start Camera", self)
+        self.btn_start_camera.setProperty("cssClass", "primary")
         self.btn_start_camera.clicked.connect(self._on_start_stop_camera)
 
         self.camera_info_panel.mirror_horizontal_cb.setChecked(
@@ -331,49 +350,35 @@ class MainWindow(QMainWindow):
             self._mirror_horizontal, self._mirror_vertical
         )
 
-        self.camera_tabs.addTab(self.camera_info_panel, "Camera")
-
-        self.camera_control_panel = CameraControlPanel(parent=self)
+        self.camera_control_panel = CameraControlPanel(parent=self, embedded=True)
         self.camera_control_panel.setEnabled(False)
-        self.camera_tabs.addTab(self.camera_control_panel, "Controls")
+        self.camera_info_panel.set_control_panel(self.camera_control_panel)
 
-        top_row_lay.addWidget(self.camera_tabs, stretch=2)
-
-
-        # BUTI Arduino Box panel
-        self.top_ctrl = TopControlPanel(self)
-        self.top_ctrl.zero_requested.connect(self._on_zero_burst)
-        self.top_ctrl.start_requested.connect(self._on_start_pump)
-        self.top_ctrl.stop_requested.connect(self._on_stop_pump)
-        self.top_ctrl.reset_requested.connect(self._on_reset_burst)
-        self.top_ctrl.step_requested.connect(self._on_step)
-        top_row_lay.addWidget(self.top_ctrl, stretch=2)
-
-
-        # Plot controls panel
-        self.plot_control_panel = PlotControlPanel(self)
-        top_row_lay.addWidget(self.plot_control_panel, stretch=2)
-
-        main_vlay.addWidget(top_row_widget, stretch=0)
-
-        # ─── Bottom Row ───────────────────────────────────────────────────
-        bottom_row_widget = QWidget()
-        bottom_row_layout = QHBoxLayout(bottom_row_widget)
-        bottom_row_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_row_layout.setSpacing(6)
-
-        # Left: live viewfinder
         self.camera_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        bottom_row_layout.addWidget(self.camera_widget, stretch=1)
+        camera_layout.addWidget(self.camera_info_panel, stretch=0)
+        camera_layout.addWidget(self.camera_widget, stretch=1)
 
-        # Right: live plot
+        # ─── Plot workspace ───────────────────────────────────────────────
+        plot_workspace = QWidget()
+        plot_workspace.setObjectName("PlotWorkspace")
+        plot_layout = QVBoxLayout(plot_workspace)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.setSpacing(6)
+
+        self.plot_control_panel = PlotControlPanel(self)
         self.force_plot_widget = ForcePlotWidget(self)
         self.force_plot_widget.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Expanding
         )
-        bottom_row_layout.addWidget(self.force_plot_widget, stretch=1)
+        plot_layout.addWidget(self.plot_control_panel, stretch=0)
+        plot_layout.addWidget(self.force_plot_widget, stretch=1)
 
-        main_vlay.addWidget(bottom_row_widget, stretch=1)
+        self.workspace_splitter.addWidget(camera_workspace)
+        self.workspace_splitter.addWidget(plot_workspace)
+        self.workspace_splitter.setStretchFactor(0, 1)
+        self.workspace_splitter.setStretchFactor(1, 1)
+        self.workspace_splitter.setSizes([1000, 1000])
+        main_vlay.addWidget(self.workspace_splitter, stretch=1)
 
         # ─── Wire Up PlotControlPanel → ForcePlotWidget ────────────────
         if hasattr(self.force_plot_widget, "set_auto_scale_x"):
@@ -409,10 +414,43 @@ class MainWindow(QMainWindow):
             )
         self.setCentralWidget(central)
 
+    def _equalize_workspace_panels(self):
+        """Give the two local control cards equal dimensions after layout."""
+
+        if not self.camera_info_panel or not self.plot_control_panel:
+            return
+        target_height = max(
+            self.camera_info_panel.sizeHint().height(),
+            self.plot_control_panel.sizeHint().height(),
+        )
+        self.camera_info_panel.setFixedHeight(target_height)
+        self.plot_control_panel.setFixedHeight(target_height)
+
+        available = max(
+            2,
+            self.workspace_splitter.width() - self.workspace_splitter.handleWidth(),
+        )
+        left_width = available // 2
+        self.workspace_splitter.setSizes([left_width, available - left_width])
+
     # ─── Camera Device & Resolution Enumeration ─────────────────────────────
+    @staticmethod
+    def _fit_combo_popup(combo: QComboBox) -> None:
+        """Keep toolbar fields compact while showing complete popup entries."""
+
+        if combo.count() <= 0:
+            return
+        metrics = combo.fontMetrics()
+        content_width = max(
+            metrics.horizontalAdvance(combo.itemText(index))
+            for index in range(combo.count())
+        )
+        popup_width = max(combo.minimumWidth(), min(content_width + 52, 620))
+        combo.view().setMinimumWidth(popup_width)
+
     def _populate_device_list(self):
         self.device_combo.clear()
-        self.device_combo.addItem("Select Device…", None)
+        self.device_combo.addItem("Choose camera…", None)
 
         if self._camera_backend == "ic4" and ic4 is not None:
             try:
@@ -436,12 +474,14 @@ class MainWindow(QMainWindow):
 
             if self.device_combo.count() == 2:
                 self.device_combo.setCurrentIndex(1)
+            self._fit_combo_popup(self.device_combo)
             return
 
         label = "OpenCV Camera (developer mode)"
         self.device_combo.addItem(label, self._dev_camera_source)
         if self.device_combo.count() == 2:
             self.device_combo.setCurrentIndex(1)
+        self._fit_combo_popup(self.device_combo)
 
     def _populate_dev_resolutions(self, dev_info: DevCameraSource):
         presets = [
@@ -458,6 +498,7 @@ class MainWindow(QMainWindow):
 
         if self.resolution_combo.count() > 1:
             self.resolution_combo.setCurrentIndex(1)
+        self._fit_combo_popup(self.resolution_combo)
 
     def _refresh_serial_port_list(self):
         ports = list_serial_ports()
@@ -489,9 +530,10 @@ class MainWindow(QMainWindow):
             self.camera_widget.clear_roi()
         dev_info = self.device_combo.itemData(index)
         self.resolution_combo.clear()
-        self.resolution_combo.addItem("Select Resolution…", None)
+        self.resolution_combo.addItem("Choose resolution…", None)
 
         if not dev_info:
+            self._fit_combo_popup(self.resolution_combo)
             return
 
         if isinstance(dev_info, DevCameraSource):
@@ -539,6 +581,7 @@ class MainWindow(QMainWindow):
                 grab.device_close()
             except Exception:
                 pass
+        self._fit_combo_popup(self.resolution_combo)
 
     @pyqtSlot()
     def _on_camera_configuration_changed(self):
@@ -553,8 +596,6 @@ class MainWindow(QMainWindow):
         self._mirror_vertical = bool(
             self.camera_info_panel.mirror_vertical_cb.isChecked()
         )
-        save_app_setting(SETTING_MIRROR_HORIZONTAL, self._mirror_horizontal)
-        save_app_setting(SETTING_MIRROR_VERTICAL, self._mirror_vertical)
         self.camera_widget.set_mirroring(
             self._mirror_horizontal, self._mirror_vertical
         )
@@ -838,6 +879,11 @@ class MainWindow(QMainWindow):
         hm.addAction(welcome_act)
         readme_act = QAction("&Open User Guide", self, triggered=self._open_readme)
         hm.addAction(readme_act)
+        update_act = QAction(
+            "Check for &Updates…", self, triggered=lambda: self.start_update_check(True)
+        )
+        hm.addAction(update_act)
+        hm.addSeparator()
         about_act = QAction(
             f"&About {APP_NAME}", self, triggered=self._show_about_dialog
         )
@@ -849,6 +895,7 @@ class MainWindow(QMainWindow):
         tb.setObjectName("MainControlsToolbar")
         tb.setIconSize(QSize(20, 20))
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.setStyleSheet(PANEL_STYLESHEET)
         self.addToolBar(Qt.TopToolBarArea, tb)
 
         # Refresh device lists
@@ -876,8 +923,32 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.serial_port_combobox)
         tb.addSeparator()
 
-        if hasattr(self, "recording_action"):
-            tb.addAction(self.recording_action)
+        camera_group = QWidget(self)
+        camera_group_layout = QHBoxLayout(camera_group)
+        camera_group_layout.setContentsMargins(6, 0, 4, 0)
+        camera_group_layout.setSpacing(6)
+
+        camera_label = QLabel("Camera Device")
+        camera_label.setProperty("cssClass", "panelTitle")
+        camera_group_layout.addWidget(camera_label)
+        self.device_combo.setMinimumWidth(250)
+        self.device_combo.setMaximumWidth(370)
+        self.device_combo.setToolTip("Select the camera device")
+        camera_group_layout.addWidget(self.device_combo)
+
+        resolution_label = QLabel("Resolution")
+        resolution_label.setProperty("cssClass", "detailLabel")
+        camera_group_layout.addWidget(resolution_label)
+        self.resolution_combo.setMinimumWidth(205)
+        self.resolution_combo.setMaximumWidth(270)
+        self.resolution_combo.setToolTip("Select the camera resolution")
+        camera_group_layout.addWidget(self.resolution_combo)
+        self.btn_start_camera.setMinimumWidth(112)
+        self.btn_start_camera.setMinimumHeight(30)
+        camera_group_layout.addWidget(self.btn_start_camera)
+        tb.addWidget(camera_group)
+        tb.addSeparator()
+
         self.playback_action = QAction(
             self.icon_playback,
             "Playback Last Recording",
@@ -1018,12 +1089,11 @@ class MainWindow(QMainWindow):
             )
 
     def _set_initial_control_states(self):
-        if hasattr(self, "recording_action"):
-            self.recording_action.setEnabled(False)
         if hasattr(self, "camera_control_panel"):
             self.camera_control_panel.setEnabled(False)
         if hasattr(self, "plot_control_panel"):
             self.plot_control_panel.setEnabled(True)
+        self._refresh_recording_button_states()
 
     # ─── Menu Actions & Dialog Slots ──────────────────────────────────────────
     def _export_plot_data_as_csv(self):
@@ -1124,6 +1194,96 @@ class MainWindow(QMainWindow):
 
     def _show_about_dialog(self):
         QMessageBox.information(self, f"About {APP_NAME}", ABOUT_TEXT)
+
+    def start_update_check(self, manual: bool = False) -> None:
+        """Check GitHub Releases without blocking the camera or serial UI."""
+
+        checker = self.update_checker
+        if checker is not None:
+            try:
+                if checker.isRunning():
+                    self._update_check_manual = self._update_check_manual or manual
+                    if manual:
+                        self.statusBar().showMessage(
+                            "An update check is already running…", 3000
+                        )
+                    return
+            except RuntimeError:
+                self.update_checker = None
+
+        self._update_check_manual = bool(manual)
+        self._update_check_found = False
+        self._update_check_failed = False
+        checker = UpdateChecker(APP_VERSION, RELEASES_URL, parent=self)
+        checker.update_available.connect(self._on_update_available)
+        checker.check_failed.connect(self._on_update_check_failed)
+        checker.finished.connect(
+            lambda current=checker: self._on_update_check_finished(current)
+        )
+        self.update_checker = checker
+        if manual:
+            self.statusBar().showMessage("Checking for BURST updates…")
+        checker.start()
+
+    @pyqtSlot(str, str)
+    def _on_update_available(self, new_tag: str, release_url: str) -> None:
+        if self._closing:
+            return
+        self._update_check_found = True
+        log.info("BURST update available: %s", new_tag)
+
+        display_tag = new_tag if new_tag.lower().startswith("v") else f"v{new_tag}"
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Information)
+        dialog.setWindowTitle("BURST Update Available")
+        dialog.setTextFormat(Qt.RichText)
+        dialog.setText(
+            f"A new version of {APP_NAME} is available.<br><br>"
+            f"Current version: <b>v{APP_VERSION}</b><br>"
+            f"New version: <b>{display_tag}</b>"
+        )
+        dialog.setInformativeText(
+            "Open the official GitHub release page to download the installer?"
+        )
+        open_button = dialog.addButton(
+            "Open Release Page", QMessageBox.AcceptRole
+        )
+        dialog.addButton("Later", QMessageBox.RejectRole)
+        dialog.exec_()
+        if dialog.clickedButton() is open_button:
+            QDesktopServices.openUrl(QUrl(release_url or RELEASES_URL))
+
+    @pyqtSlot(str)
+    def _on_update_check_failed(self, message: str) -> None:
+        self._update_check_failed = True
+        if self._closing or not self._update_check_manual:
+            return
+        QMessageBox.warning(
+            self,
+            "Update Check Failed",
+            "BURST could not reach GitHub Releases. Check the internet "
+            "connection and try again.",
+        )
+        log.info("Manual update check failed: %s", message)
+
+    def _on_update_check_finished(self, checker: UpdateChecker) -> None:
+        if checker is not self.update_checker:
+            checker.deleteLater()
+            return
+        if (
+            self._update_check_manual
+            and not self._update_check_found
+            and not self._update_check_failed
+            and not self._closing
+        ):
+            QMessageBox.information(
+                self,
+                "BURST Is Up to Date",
+                f"BURST v{APP_VERSION} is the latest available version.",
+            )
+        self.statusBar().clearMessage()
+        self.update_checker = None
+        checker.deleteLater()
 
     def _show_welcome_dialog(self):
         from ui.welcome_dialog import WelcomeDialog
@@ -1526,9 +1686,14 @@ class MainWindow(QMainWindow):
         self._recording_had_output = True
         self._last_recording_paths = {"csv": csv_path, "tiff": tiff_path}
         self._play_completion_sound()
-        self._prompt_rename_recording_pair()
         if hasattr(self, "playback_action"):
             self.playback_action.setEnabled(True)
+
+    def _run_recording_completion_prompts(self):
+        """Run completion prompts in one deterministic, user-facing sequence."""
+
+        self._prompt_rename_recording_pair()
+        self._maybe_prompt_open_folder()
 
     def _prompt_rename_recording_pair(self):
         csv_path = self._last_recording_paths.get("csv")
@@ -1601,7 +1766,8 @@ class MainWindow(QMainWindow):
         )
         self._refresh_recording_button_states()
         if self._recording_had_output:
-            self._maybe_prompt_open_folder()
+            self._recording_had_output = False
+            self._run_recording_completion_prompts()
 
     def _refresh_recording_button_states(self):
         """
@@ -1616,17 +1782,19 @@ class MainWindow(QMainWindow):
             self.recording_action.setText("Stop R&ecording")
             self.recording_action.setShortcut(Qt.CTRL | Qt.Key_T)
             self.recording_action.setEnabled(True)
+            self.top_ctrl.set_recording_state("recording", True)
         elif self._recording_state == "finalizing":
             self.recording_action.setIcon(self.icon_record_stop)
             self.recording_action.setText("Finalizing Recording…")
             self.recording_action.setEnabled(False)
+            self.top_ctrl.set_recording_state("finalizing", False)
         else:
             self.recording_action.setIcon(self.icon_record_start)
             self.recording_action.setText("Start &Recording")
             self.recording_action.setShortcut(Qt.CTRL | Qt.Key_R)
-            self.recording_action.setEnabled(
-                serial_ready and camera_ready and not self._device_run_active
-            )
+            can_start = serial_ready and camera_ready and not self._device_run_active
+            self.recording_action.setEnabled(can_start)
+            self.top_ctrl.set_recording_state("idle", can_start)
         if hasattr(self, "change_session_action"):
             self.change_session_action.setEnabled(self._recording_state == "idle")
 
@@ -1686,6 +1854,17 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._recorder_thread = None
+
+        self._closing = True
+        checker = self.update_checker
+        if checker is not None:
+            try:
+                if checker.isRunning():
+                    checker.requestInterruption()
+                    checker.wait(int((checker.timeout + 0.5) * 1000))
+            except RuntimeError:
+                pass
+            self.update_checker = None
 
         # 2) Stop the serial thread (if it exists)
         if self._serial_thread:

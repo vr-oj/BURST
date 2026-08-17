@@ -41,6 +41,39 @@ def recording_pair_paths(folder: str, base_name: str) -> tuple[str, str]:
     )
 
 
+def find_recording_csv_for_tiff(tiff_path: str) -> str | None:
+    """Return the most likely synchronized CSV beside ``tiff_path``.
+
+    BURST's canonical pair is ``<name>_video.tif`` and
+    ``<name>_force.csv``. Older same-stem pairs and folders containing a
+    single CSV are also supported, while ambiguous folders are left for the
+    caller to explain rather than silently pairing the wrong data.
+    """
+
+    tiff = Path(tiff_path)
+    if tiff.suffix.lower() not in {".tif", ".tiff"}:
+        return None
+    try:
+        csv_files = [path for path in tiff.parent.iterdir() if path.suffix.lower() == ".csv"]
+    except OSError:
+        return None
+
+    by_name = {path.name.casefold(): path for path in csv_files}
+    stem = tiff.stem
+    candidate_names = []
+    if stem.casefold().endswith("_video"):
+        candidate_names.append(f"{stem[:-6]}_force.csv")
+    candidate_names.append(f"{stem}.csv")
+
+    for candidate_name in candidate_names:
+        match = by_name.get(candidate_name.casefold())
+        if match is not None:
+            return str(match)
+    if len(csv_files) == 1:
+        return str(csv_files[0])
+    return None
+
+
 def rename_recording_pair(
     csv_path: str,
     tiff_path: str,

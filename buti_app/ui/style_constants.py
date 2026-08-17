@@ -25,6 +25,12 @@ QFrame[cssClass="heroCard"] {
     border-radius: 8px;
 }
 
+QFrame[cssClass="subCard"] {
+    background-color: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+}
+
 QLabel[cssClass="heroLabel"] {
     font-size: 10px;
     letter-spacing: 0.08em;
@@ -56,6 +62,18 @@ QLabel[cssClass="microLabel"] {
     color: rgba(255, 255, 255, 0.55);
 }
 
+QLabel[cssClass="sectionLabel"] {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: rgba(255, 255, 255, 0.82);
+}
+
+QLabel[cssClass="axisState"] {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.52);
+}
+
 QFrame[cssClass="panelDivider"] {
     background-color: rgba(255, 255, 255, 0.1);
     min-height: 1px;
@@ -78,6 +96,31 @@ QPushButton[cssClass="primary"]:hover:!disabled {
 QPushButton[cssClass="primary"]:disabled {
     background-color: rgba(255, 255, 255, 0.08);
     color: rgba(255, 255, 255, 0.35);
+}
+
+QPushButton[cssClass="record"] {
+    background-color: #D94F57;
+    color: #FFFFFF;
+    font-size: 13px;
+    font-weight: 700;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 8px;
+    padding: 9px 16px;
+}
+
+QPushButton[cssClass="record"]:hover:!disabled {
+    background-color: #EB6068;
+}
+
+QPushButton[cssClass="record"][recordState="recording"] {
+    background-color: #A92F38;
+    border-color: #F07A80;
+}
+
+QPushButton[cssClass="record"]:disabled {
+    background-color: rgba(217, 79, 87, 0.18);
+    color: rgba(255, 255, 255, 0.38);
+    border-color: rgba(255, 255, 255, 0.10);
 }
 
 QPushButton[cssClass="ghost"] {
@@ -111,17 +154,8 @@ QLineEdit[cssClass="monoInput"] {
 }
 
 QComboBox[cssClass="monoInput"]::drop-down {
-    width: 18px;
+    width: 22px;
     border-left: 1px solid rgba(255, 255, 255, 0.14);
-}
-
-QComboBox[cssClass="monoInput"]::down-arrow {
-    image: none;
-}
-
-QComboBox[cssClass="monoInput"]::down-arrow:!editable {
-    width: 0;
-    height: 0;
 }
 
 QCheckBox[cssClass="muted"] {
@@ -157,5 +191,15 @@ QSlider[cssClass="controlSlider"]::handle:horizontal {
 
 QSlider[cssClass="controlSlider"]::handle:horizontal:disabled {
     background: rgba(255, 255, 255, 0.25);
+}
+
+QListWidget[cssClass="batchList"] {
+    color: rgba(255, 255, 255, 0.86);
+    background-color: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 5px;
+    padding: 3px;
+    font-family: "Roboto Mono", "Consolas", "Courier New", monospace;
+    font-size: 11px;
 }
 '''

@@ -4,12 +4,35 @@ from pathlib import Path
 from unittest.mock import patch
 
 from buti_app.utils.recording_files import (
+    find_recording_csv_for_tiff,
     rename_recording_pair,
     validate_path_component,
 )
 
 
 class RecordingFileTests(unittest.TestCase):
+    def test_finds_canonical_csv_pair_from_tiff_alone(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            tiff_path = folder / "Trial A_video.tif"
+            csv_path = folder / "Trial A_force.csv"
+            tiff_path.write_bytes(b"tiff")
+            csv_path.write_text("force", encoding="utf-8")
+
+            self.assertEqual(
+                find_recording_csv_for_tiff(str(tiff_path)), str(csv_path)
+            )
+
+    def test_does_not_guess_when_multiple_unmatched_csv_files_exist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            tiff_path = folder / "recording.tif"
+            tiff_path.write_bytes(b"tiff")
+            (folder / "one.csv").write_text("one", encoding="utf-8")
+            (folder / "two.csv").write_text("two", encoding="utf-8")
+
+            self.assertIsNone(find_recording_csv_for_tiff(str(tiff_path)))
+
     def test_validates_windows_safe_components(self):
         self.assertEqual(validate_path_component("  Trial 7  "), "Trial 7")
         for invalid in ("", "../trial", "bad:name", "CON", "name."):
