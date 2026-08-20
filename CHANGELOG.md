@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Added selectable, remembered recording-completion sounds with preview and a
+  softer default cue.
+- Changed Y-axis autoscaling to fit only force samples inside the visible
+  X-axis window and refresh immediately when that window changes.
+- Renamed newly created recording folders from `FillN` to `RunN` while
+  reserving legacy `FillN` numbers for backward-compatible sessions.
+- Combined post-recording file naming and the open-folder choice into one
+  completion window.
+- Replaced the remembered open-folder prompt with a direct **Open Run Folder**
+  button in the completion window.
+- Added a user-friendly integrity summary to that completion window, with
+  counts, duration, final file sizes, warnings, and explanatory hover text.
+- Added silent pre-recording readiness checks that only interrupt the user when
+  a prerequisite fails.
+- Added crash-safe partial outputs, an atomic run manifest, periodic flushing,
+  and guided recovery of readable interrupted recordings on the next launch.
+- Added an optional path-only **Open in BRAID** handoff, shown with the BRAID
+  logo only when BRAID is installed; neither application depends on the other.
+
 ## 1.3.0
 
 BURST 1.3.0 is a focused acquisition, playback, and interface release for the

@@ -19,6 +19,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib as mpl
 
 from utils.config import PLOT_DEFAULT_Y_MIN, PLOT_DEFAULT_Y_MAX
+from utils.plot_scaling import visible_force_limits
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +164,22 @@ class ForcePlotWidget(QWidget):
         for ax in self.axes.values():
             ax.set_xlim(limits)
 
+    def _autoscale_y_to_visible_x(self):
+        """Fit Y to the samples visible in the current X-axis window."""
+
+        primary_ax = self._primary_axis()
+        if not primary_ax:
+            return
+
+        limits = visible_force_limits(
+            self.times,
+            self.forces,
+            *primary_ax.get_xlim(),
+        )
+        if limits is None:
+            return
+        primary_ax.set_ylim(limits)
+
     def _update_axes_limits(self, auto_x: bool, auto_y: bool):
         primary_ax = self._primary_axis()
         if not primary_ax:
@@ -183,21 +200,19 @@ class ForcePlotWidget(QWidget):
                 limits = (0, 10)
             self._apply_xlim(limits)
         else:
-            t_latest = self.times[-1] if self.times else 0.0
-            xmin = max(0.0, t_latest - self.window_duration)
-            xmax = t_latest
-            self.manual_xlim = (xmin, xmax)
+            if self.manual_xlim is None:
+                t_latest = self.times[-1] if self.times else 0.0
+                xmin = max(0.0, t_latest - self.window_duration)
+                xmax = t_latest
+                if xmin == xmax:
+                    xmax = xmin + 1.0
+                self.manual_xlim = (xmin, xmax)
             self._apply_xlim(self.manual_xlim)
-            self.scrollbar.hide()
+            self._update_scrollbar()
 
         # â”€â”€â”€ Y-axis handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if auto_y and self.times:
-            mn, mx = min(self.forces), max(self.forces)
-            if math.isfinite(mn) and math.isfinite(mx):
-                pad = max(abs(mx - mn) * 0.1, 2.0)
-                if pad == 0:
-                    pad = 2.0
-                primary_ax.set_ylim(mn - pad, mx + pad)
+            self._autoscale_y_to_visible_x()
         elif not auto_y and self.manual_ylim:
             primary_ax.set_ylim(self.manual_ylim)
         elif not self.times:
@@ -374,18 +389,17 @@ class ForcePlotWidget(QWidget):
             self.scrollbar.hide()
             return
 
-        # Configure scrollbar
-        self.scrollbar.setMinimum(0)
-        self.scrollbar.setMaximum(
-            max(full_len - window_size, 0)
-        )  # Ensure maximum is not negative
-        self.scrollbar.setPageStep(window_size)
-        self.scrollbar.setSingleStep(
-            max(window_size // 10, 1)
-        )  # Ensure singleStep is at least 1
-
-        # Position scrollbar thumb
-        self.scrollbar.setValue(idx0)  # Set value after setting min/max/pageStep
+        # Configure the scrollbar without treating its programmatic position as
+        # a user pan, which would otherwise rewrite the requested X limits.
+        previous_block_state = self.scrollbar.blockSignals(True)
+        try:
+            self.scrollbar.setMinimum(0)
+            self.scrollbar.setMaximum(max(full_len - window_size, 0))
+            self.scrollbar.setPageStep(window_size)
+            self.scrollbar.setSingleStep(max(window_size // 10, 1))
+            self.scrollbar.setValue(idx0)
+        finally:
+            self.scrollbar.blockSignals(previous_block_state)
         self.scrollbar.show()
 
     @pyqtSlot(int)
@@ -433,13 +447,41 @@ class ForcePlotWidget(QWidget):
 
         self.manual_xlim = (xmin_new, xmax_new)
         self._apply_xlim(self.manual_xlim)
+        if self._last_auto_y:
+            self._autoscale_y_to_visible_x()
+        self.canvas.draw_idle()
+
+    @pyqtSlot(bool)
+    def set_auto_scale_x(self, enabled):
+        self._last_auto_x = bool(enabled)
+        if enabled:
+            self.manual_xlim = None
+        elif self.manual_xlim is None:
+            primary_ax = self._primary_axis()
+            if primary_ax:
+                self.manual_xlim = primary_ax.get_xlim()
+        self._update_axes_limits(self._last_auto_x, self._last_auto_y)
+        self.canvas.draw_idle()
+
+    @pyqtSlot(bool)
+    def set_auto_scale_y(self, enabled):
+        self._last_auto_y = bool(enabled)
+        primary_ax = self._primary_axis()
+        if enabled:
+            self.manual_ylim = None
+        elif self.manual_ylim is None and primary_ax:
+            self.manual_ylim = primary_ax.get_ylim()
+        self._update_axes_limits(self._last_auto_x, self._last_auto_y)
         self.canvas.draw_idle()
 
     def set_manual_x_limits(self, xmin, xmax):
         if xmin < xmax:
+            self._last_auto_x = False
             self.manual_xlim = (xmin, xmax)
             self._apply_xlim(self.manual_xlim)
             self._update_scrollbar()  # Update scrollbar based on new manual limits
+            if self._last_auto_y:
+                self._autoscale_y_to_visible_x()
             self.canvas.draw_idle()  # Redraw
         else:
             log.warning("X min must be less than X max")
@@ -448,6 +490,7 @@ class ForcePlotWidget(QWidget):
         if (
             ymin < ymax and math.isfinite(ymin) and math.isfinite(ymax)
         ):  # Ensure finite values
+            self._last_auto_y = False
             self.manual_ylim = (ymin, ymax)
             primary_ax = self._primary_axis()
             if primary_ax:
@@ -572,4 +615,3 @@ class ForcePlotWidget(QWidget):
             "time": list(self.times),
             "force": list(self.forces),
         }
-

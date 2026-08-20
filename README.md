@@ -9,9 +9,9 @@
 2. **Set Up Camera** – Choose the camera and resolution from the main toolbar, then click **Start Camera**.
 3. **Adjust Exposure/Gain** – Use the always-visible **Camera Settings** card above the live camera to fine-tune the full-width controls.
 4. **Zero BURST** – Ensure the force reading is zeroed before recording.
-5. **Choose a Session** – Select or create the session that will contain its Fill folders.
+5. **Choose a Session** – Select or create the session that will contain its Run folders.
 6. **Start Recording** – Click the prominent red **Start Recording** button in the BUTI status strip to begin synchronized acquisition.
-7. **Finish Recording** – BURST stops automatically when device data ends, plays a completion chime, offers one name for the CSV/TIFF pair, and then optionally opens its folder.
+7. **Finish Recording** – BURST stops automatically when device data ends, plays the selected completion cue, and shows one window with recording-integrity details, paired-file naming, folder access, and an optional **Open in BRAID** action when BRAID is installed.
 8. **Playback & Export** – Open **Playback** and select the TIFF; BURST finds its paired CSV automatically so you can review the stack, overlay force data, and export frames.
 
 ---
@@ -33,13 +33,19 @@
 - Provides exposure, gain, and brightness sliders with instant visual feedback.
 
 ### Synchronized Output
-- Recording folder structure groups multiple fills into a named daily session:
+- Recording folder structure groups multiple runs into a named daily session:
   ```
-  BURST_ROOT/YYYY-MM-DD/Session Name/FillN/
+  BURST_ROOT/YYYY-MM-DD/Session Name/RunN/
       trial_name_force.csv   # Force + timing data
       trial_name_video.tif   # Grayscale stack, one frame per BUTI Arduino Box trigger
   ```
-- After a fill closes, one optional base-name change is applied transactionally to both files.
+- After a run closes, one optional base-name change is applied transactionally to both files.
+- BURST performs a silent readiness check before acquisition. If every check
+  passes, recording starts normally; if not, one message explains all items
+  that need attention.
+- Active files and a small run manifest remain marked as partial until both
+  outputs close. BURST periodically flushes them and offers to validate and
+  recover readable data after an interrupted app session.
 - Default save location is `~/Documents/BURST Results`. Set `BURST_RESULTS_DIR` (or the legacy `BUTI_RESULTS_DIR`) to override.
 - Playback tools support zoom, pan, drawn or exact pixel-coordinate ROI
   selection, exporting annotated frames, and cropping an ROI across the
@@ -52,8 +58,14 @@
   without resampling, and independent left/right and up/down flips apply to both
   the preview and TIFF output. Camera orientation starts unflipped on every app
   launch so a transform from an earlier session cannot silently carry over.
-- A bundled completion chime is enabled by default and can be muted from the
-  **Acquisition** menu.
+- Several bundled completion cues are available from the **Acquisition** menu,
+  with a gentler default, instant preview, and a remembered selection.
+- The post-recording integrity card summarizes frame/sample counts, duration,
+  file sizes, continuity, and synchronization warnings. Hover over a metric or
+  status for a more detailed explanation.
+- When BRAID is installed, **Open in BRAID** launches the finalized TIFF using
+  a generic file-path handoff. BURST and BRAID remain separate applications;
+  each can still be installed and used independently.
 - BURST silently checks the official GitHub Releases page after startup. A
   notification appears only when a newer version is available and links to the
   official installer download. **Help → Check for Updates…** runs the same
@@ -160,14 +172,22 @@ files above.
    - Pick the desired camera/resolution and click **Start Camera** for a live preview.
 4. Start recording:
    - Use **Acquisition → Change Recording Session** to select or create the
-     session used for subsequent Fill folders.
+     session used for subsequent Run folders.
    - Use **Acquisition → Start Recording** or press **Ctrl+R**.
    - BURST waits for the first BUTI Arduino Box tick before writing data.
 5. Stop recording:
    - Let the device run finish naturally, or use **Acquisition → Stop Recording**
      / **Ctrl+T**. Files are finalized automatically, a completion sound plays,
-     and BURST offers to rename the CSV/TIFF pair before asking whether to open
-     its folder.
+     and BURST shows one completion window for reviewing integrity, renaming
+     the CSV/TIFF pair, and opening the Run folder.
+   - Choose a cue from **Acquisition → Completion Sound**. Selecting a cue plays
+     a preview and BURST remembers it for future launches. The separate
+     **Play Recording Completion Sound** option can silence the cue entirely.
+   - The completion window includes an **Open Run Folder** button that can be
+     used without closing the window.
+   - If BRAID is installed, **Open in BRAID** applies the chosen paired-file
+     name and opens the already-saved TIFF for analysis. Finishing the dialog
+     without clicking it never launches BRAID.
 6. Crop a recording (optional):
    - Open the recording in **Playback** and choose its TIFF. BURST automatically
      identifies the neighboring `<name>_force.csv` paired with

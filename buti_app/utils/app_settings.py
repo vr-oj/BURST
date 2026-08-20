@@ -55,5 +55,5 @@ def load_app_settings():
 SETTING_LAST_CAMERA_INDEX = "last_camera_index"
 SETTING_LAST_PROFILE_NAME = "last_profile_name"
 SETTING_RESULTS_DIR = "results_dir"
-SETTING_OPEN_FOLDER_PROMPT = "open_folder_prompt"
 SETTING_COMPLETION_SOUND = "recording_completion_sound"
+SETTING_COMPLETION_SOUND_ID = "recording_completion_sound_id"

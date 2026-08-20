@@ -6,13 +6,13 @@ import re
 import logging
 import csv
 import json
+import time
 from datetime import datetime
 try:
     import imagingcontrol4 as ic4  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
     ic4 = None
 
-import subprocess
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QToolBar,
     QStatusBar,
     QAction,
+    QActionGroup,
     QFileDialog,
     QDialog,
     QDialogButtonBox,
@@ -33,7 +34,6 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QSizePolicy,
     QDoubleSpinBox,
-    QCheckBox,
     QHBoxLayout,
     QInputDialog,
     QSplitter,
@@ -46,6 +46,7 @@ from PyQt5.QtCore import (
     QSize,
     QThread,
     QMetaObject,
+    QProcess,
 )
 from PyQt5.QtGui import QIcon, QKeySequence, QImage, QDesktopServices
 from PyQt5.QtCore import QUrl
@@ -61,8 +62,13 @@ from utils.app_settings import (
     load_app_setting,
     SETTING_LAST_CAMERA_INDEX,
     SETTING_RESULTS_DIR,
-    SETTING_OPEN_FOLDER_PROMPT,
     SETTING_COMPLETION_SOUND,
+    SETTING_COMPLETION_SOUND_ID,
+)
+from utils.completion_sounds import (
+    COMPLETION_SOUNDS,
+    DEFAULT_COMPLETION_SOUND,
+    get_completion_sound,
 )
 import utils.config as config
 from utils.config import (
@@ -83,14 +89,22 @@ from utils.config import (
     SERIAL_CMD_RESET,
     SERIAL_CMD_STEP,
 )
-from utils.path_helpers import get_next_fill_folder, list_session_names, resource_path
+from utils.path_helpers import get_next_run_folder, list_session_names, resource_path
+from utils.braid_connector import braid_launch_command, find_braid_application
+from utils.preflight import run_recording_preflight
 from utils.recording_files import rename_recording_pair, validate_path_component
+from utils.recording_recovery import (
+    find_recoverable_manifests,
+    recover_partial_recording,
+    update_manifest_file_names,
+)
 from utils.update_checker import UpdateChecker
 from ui.canvas.qtcamera_widget import QtCameraWidget
 from ui.control_panels.camera_control_panel import CameraControlPanel
 from ui.control_panels.camera_info_panel import CameraInfoPanel
 from ui.control_panels.top_control_panel import TopControlPanel
 from ui.control_panels.plot_control_panel import PlotControlPanel
+from ui.recording_completion_dialog import RecordingCompletionDialog
 from ui.style_constants import PANEL_STYLESHEET
 from ui.canvas.force_plot_widget import ForcePlotWidget
 
@@ -113,18 +127,26 @@ class MainWindow(QMainWindow):
         self._serial_active = False
         self._recorder_thread = None
         self._recorder_worker = None
-        self._current_fill_folder = None
-        self._open_folder_prompt = load_app_setting(SETTING_OPEN_FOLDER_PROMPT, True)
+        self._current_run_folder = None
         self._last_recording_paths = {"tiff": None, "csv": None}
         self._serial_start_sent = False
         self._device_run_active = False
         self._recording_state = "idle"
         self._current_session_name = None
         self._recording_had_output = False
+        self._last_recording_summary = None
+        self._last_camera_frame_monotonic = None
         self._completion_sound_enabled = bool(
             load_app_setting(SETTING_COMPLETION_SOUND, True)
         )
+        self._completion_sound_id = get_completion_sound(
+            load_app_setting(
+                SETTING_COMPLETION_SOUND_ID,
+                DEFAULT_COMPLETION_SOUND,
+            )
+        )["id"]
         self._completion_sound_effect = None
+        self._completion_sound_actions = {}
         self.update_checker = None
         self._update_check_manual = False
         self._update_check_found = False
@@ -237,24 +259,25 @@ class MainWindow(QMainWindow):
         self.icon_playback = get_icon("image.svg")
 
     def _init_completion_sound(self):
-        """Preload the bundled completion cue, retaining a system-beep fallback."""
+        """Preload the selected completion cue, retaining a system-beep fallback."""
 
         if QSoundEffect is None:
             return
-        sound_path = resource_path("ui", "sounds", "recording_complete.wav")
+        sound = get_completion_sound(self._completion_sound_id)
+        sound_path = resource_path("ui", "sounds", sound["filename"])
         if not os.path.exists(sound_path):
             log.warning("Recording completion sound is missing: %s", sound_path)
             return
         try:
-            effect = QSoundEffect(self)
+            effect = self._completion_sound_effect or QSoundEffect(self)
             effect.setSource(QUrl.fromLocalFile(sound_path))
-            effect.setVolume(1.0)
+            effect.setVolume(sound["volume"])
             self._completion_sound_effect = effect
         except Exception:
             log.exception("Unable to initialize the recording completion sound")
 
-    def _play_completion_sound(self):
-        if not self._completion_sound_enabled:
+    def _play_completion_sound(self, *, preview=False):
+        if not preview and not self._completion_sound_enabled:
             return
         try:
             if self._completion_sound_effect is not None:
@@ -647,6 +670,7 @@ class MainWindow(QMainWindow):
                 return
 
             w, h, pf_name = resdata
+            self._last_camera_frame_monotonic = None
 
             if self._camera_backend == "ic4" and ic4 is not None:
                 # Instantiate the SDK camera thread
@@ -706,6 +730,7 @@ class MainWindow(QMainWindow):
                 )
             self.camera_thread.stop()
             self.camera_thread = None
+            self._last_camera_frame_monotonic = None
 
             # Reset UI
             self.btn_start_camera.setText("Start Camera")
@@ -756,6 +781,7 @@ class MainWindow(QMainWindow):
         every time a new frame arrives.  If you want to hook this up, simply:
             self.camera_thread.frame_ready.connect(self._update_camera_info)
         """
+        self._last_camera_frame_monotonic = time.monotonic()
         self.camera_info_panel.increment_frame_count()
 
         width = image.width()
@@ -794,6 +820,7 @@ class MainWindow(QMainWindow):
         self.camera_info_panel.reset_metrics()
         self.camera_info_panel.set_status_message("Camera error.")
         self.camera_widget.clear_image()
+        self._last_camera_frame_monotonic = None
         self.btn_start_camera.setText("Start Camera")
         self.camera_info_panel.set_roi_available(
             False, self.camera_widget.normalized_roi() is not None
@@ -851,6 +878,27 @@ class MainWindow(QMainWindow):
             self._set_completion_sound_enabled
         )
         am.addAction(self.completion_sound_action)
+
+        self.completion_sound_menu = am.addMenu("Completion Sound")
+        self.completion_sound_group = QActionGroup(self)
+        self.completion_sound_group.setExclusive(True)
+        for sound in COMPLETION_SOUNDS:
+            action = QAction(sound["label"], self, checkable=True)
+            action.setChecked(sound["id"] == self._completion_sound_id)
+            action.triggered.connect(
+                lambda _checked=False, sound_id=sound["id"]: self._set_completion_sound_id(
+                    sound_id
+                )
+            )
+            self.completion_sound_group.addAction(action)
+            self.completion_sound_menu.addAction(action)
+            self._completion_sound_actions[sound["id"]] = action
+        self.completion_sound_menu.addSeparator()
+        preview_sound_action = QAction("Preview Selected Sound", self)
+        preview_sound_action.triggered.connect(
+            lambda _checked=False: self._play_completion_sound(preview=True)
+        )
+        self.completion_sound_menu.addAction(preview_sound_action)
 
         vm = mb.addMenu("&View")
         if hasattr(self, "dock_console") and self.dock_console:
@@ -1137,6 +1185,16 @@ class MainWindow(QMainWindow):
     def _set_completion_sound_enabled(self, enabled: bool):
         self._completion_sound_enabled = bool(enabled)
         save_app_setting(SETTING_COMPLETION_SOUND, self._completion_sound_enabled)
+
+    def _set_completion_sound_id(self, sound_id: str):
+        sound = get_completion_sound(sound_id)
+        self._completion_sound_id = sound["id"]
+        save_app_setting(SETTING_COMPLETION_SOUND_ID, self._completion_sound_id)
+        self._init_completion_sound()
+        action = self._completion_sound_actions.get(self._completion_sound_id)
+        if action is not None:
+            action.setChecked(True)
+        self._play_completion_sound(preview=True)
 
     @pyqtSlot()
     def _change_recording_session(self):
@@ -1557,46 +1615,30 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_start_recording(self):
-        """Prepare a synchronized fill and start the device only when ready."""
-        if not self._serial_thread or not self._serial_thread.isRunning():
-            QMessageBox.warning(
-                self,
-                "BUTI Arduino Box",
-                "Connect the BUTI Arduino Box before starting a recording.",
-            )
-            self._refresh_recording_button_states()
-            return
-        if self.camera_thread is None or not self.camera_thread.isRunning():
-            QMessageBox.warning(
-                self, "Camera", "Start the camera before starting a recording."
-            )
-            return
-        if self._device_run_active:
-            QMessageBox.warning(
-                self,
-                "Device Already Running",
-                "Stop the manual device run before starting a recording.",
-            )
-            return
+        """Prepare a synchronized run and start the device only when ready."""
         if self._current_session_name is None:
             self._change_recording_session()
         if self._current_session_name is None:
             return
+        if not self._run_silent_recording_preflight():
+            self._refresh_recording_button_states()
+            return
 
         try:
-            outdir = get_next_fill_folder(self._current_session_name)
+            outdir = get_next_run_folder(self._current_session_name)
         except (OSError, ValueError) as exc:
             self._show_error_dialog(
                 "Recording Folder Error",
-                f"Unable to create the next Fill folder:\n{exc}",
+                f"Unable to create the next Run folder:\n{exc}",
             )
             return
-        self._current_fill_folder = outdir
+        self._current_run_folder = outdir
         self._last_recording_paths = {"tiff": None, "csv": None}
         self._recording_had_output = False
+        self._last_recording_summary = None
         if hasattr(self, "playback_action"):
             self.playback_action.setEnabled(False)
-        fill_folder_name = os.path.basename(outdir)
+        run_folder_name = os.path.basename(outdir)
 
         self._recorder_thread = QThread(self)
         self._recorder_worker = RecordingManager(
@@ -1604,6 +1646,7 @@ class MainWindow(QMainWindow):
             normalized_roi=self.camera_widget.normalized_roi(),
             mirror_horizontal=self._mirror_horizontal,
             mirror_vertical=self._mirror_vertical,
+            acquisition_metadata=self._recording_acquisition_metadata(outdir),
         )
         self._recorder_worker.moveToThread(self._recorder_thread)
         self._recorder_thread.started.connect(self._recorder_worker.start_recording)
@@ -1633,8 +1676,69 @@ class MainWindow(QMainWindow):
         self.resolution_combo.setEnabled(False)
         self.btn_start_camera.setEnabled(False)
         self._refresh_recording_button_states()
-        self.recording_status_label.setText(f"Preparing → {fill_folder_name}")
-        log.info("Preparing recording in %s.", fill_folder_name)
+        self.recording_status_label.setText(f"Preparing → {run_folder_name}")
+        log.info("Preparing recording in %s.", run_folder_name)
+
+    def _run_silent_recording_preflight(self) -> bool:
+        """Return quietly when ready and explain every failed prerequisite at once."""
+
+        now = time.monotonic()
+        frame_age = (
+            None
+            if self._last_camera_frame_monotonic is None
+            else max(0.0, now - self._last_camera_frame_monotonic)
+        )
+        report = run_recording_preflight(
+            serial_ready=(
+                self._serial_thread is not None and self._serial_thread.isRunning()
+            ),
+            camera_ready=(
+                self.camera_thread is not None and self.camera_thread.isRunning()
+            ),
+            camera_frame_age_s=frame_age,
+            session_name=self._current_session_name,
+            device_run_active=self._device_run_active,
+            results_root=config.BURST_ROOT,
+            minimum_free_gb=config.MIN_FREE_SPACE_GB,
+        )
+        if report.passed:
+            log.info("Silent recording readiness check passed.")
+            return True
+
+        failed_labels = "\n".join(f"• {check.label}: {check.detail}" for check in report.failures)
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setWindowTitle("Recording Not Ready")
+        dialog.setText("BURST found a few things to fix before recording:")
+        dialog.setInformativeText(failed_labels)
+        dialog.setDetailedText(
+            "\n".join(
+                f"{'PASS' if check.passed else 'FAILED'} — {check.label}: {check.detail}"
+                for check in report.checks
+            )
+        )
+        dialog.exec_()
+        return False
+
+    def _recording_acquisition_metadata(self, outdir: str) -> dict:
+        resolution = self.resolution_combo.currentData()
+        if isinstance(resolution, (tuple, list)):
+            resolution = list(resolution)
+        elif resolution is not None:
+            resolution = str(resolution)
+        roi = self.camera_widget.normalized_roi()
+        return {
+            "application": APP_NAME,
+            "application_version": APP_VERSION,
+            "session": self._current_session_name,
+            "run": os.path.basename(outdir),
+            "camera_resolution": resolution,
+            "frame_transform": {
+                "normalized_roi": list(roi) if roi else None,
+                "mirror_horizontal": self._mirror_horizontal,
+                "mirror_vertical": self._mirror_vertical,
+            },
+        }
 
     @pyqtSlot()
     def _on_recorder_ready(self):
@@ -1647,7 +1751,7 @@ class MainWindow(QMainWindow):
             self._device_run_active = True
             self.top_ctrl.set_run_state(True, connected=True)
             self.recording_status_label.setText(
-                f"Recording → {os.path.basename(self._current_fill_folder)}"
+                f"Recording → {os.path.basename(self._current_run_folder)}"
             )
         else:
             self._request_recording_stop(
@@ -1681,21 +1785,21 @@ class MainWindow(QMainWindow):
         self._refresh_recording_button_states()
         log.info("Stop recording requested (%s).", reason)
 
-    @pyqtSlot(str, str)
-    def _on_recording_finalized(self, csv_path: str, tiff_path: str):
+    @pyqtSlot(str, str, object)
+    def _on_recording_finalized(self, csv_path: str, tiff_path: str, summary):
         self._recording_had_output = True
         self._last_recording_paths = {"csv": csv_path, "tiff": tiff_path}
+        self._last_recording_summary = summary
         self._play_completion_sound()
         if hasattr(self, "playback_action"):
             self.playback_action.setEnabled(True)
 
     def _run_recording_completion_prompts(self):
-        """Run completion prompts in one deterministic, user-facing sequence."""
+        """Collect rename and open-folder choices in one completion window."""
 
-        self._prompt_rename_recording_pair()
-        self._maybe_prompt_open_folder()
+        self._prompt_recording_completion()
 
-    def _prompt_rename_recording_pair(self):
+    def _prompt_recording_completion(self):
         csv_path = self._last_recording_paths.get("csv")
         tiff_path = self._last_recording_paths.get("tiff")
         if not csv_path or not tiff_path:
@@ -1703,18 +1807,27 @@ class MainWindow(QMainWindow):
         current_base = os.path.basename(csv_path)
         if current_base.endswith("_force.csv"):
             current_base = current_base[: -len("_force.csv")]
+
+        folder_path = self._current_run_folder or os.path.dirname(csv_path)
+        dialog = RecordingCompletionDialog(
+            current_base,
+            os.path.basename(folder_path),
+            summary=self._last_recording_summary,
+            braid_application=find_braid_application(),
+            braid_icon_path=resource_path("ui", "icons", "braid.png"),
+            parent=self,
+        )
+        dialog.open_folder_requested.connect(
+            lambda: self._open_recording_folder(folder_path)
+        )
         while True:
-            base_name, accepted = QInputDialog.getText(
-                self,
-                "Name Recording",
-                "Base name for both the CSV and TIFF:",
-                text=current_base,
-            )
-            if not accepted:
+            if dialog.exec_() != QDialog.Accepted:
                 return
             try:
                 renamed_csv, renamed_tiff = rename_recording_pair(
-                    csv_path, tiff_path, base_name
+                    csv_path,
+                    tiff_path,
+                    dialog.recording_name(),
                 )
             except (ValueError, FileNotFoundError, FileExistsError, OSError) as exc:
                 QMessageBox.warning(self, "Unable to Rename Recording", str(exc))
@@ -1723,7 +1836,114 @@ class MainWindow(QMainWindow):
                 "csv": renamed_csv,
                 "tiff": renamed_tiff,
             }
+            csv_path, tiff_path = renamed_csv, renamed_tiff
+            try:
+                update_manifest_file_names(folder_path, renamed_csv, renamed_tiff)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                log.warning("Unable to update recording manifest names: %s", exc)
+
+            if dialog.completion_action() == "braid":
+                if self._open_recording_in_braid(tiff_path):
+                    return
+                continue
             return
+
+    def _open_recording_in_braid(self, tiff_path: str) -> bool:
+        application = find_braid_application()
+        if not application:
+            QMessageBox.information(
+                self,
+                "BRAID Not Available",
+                "BRAID is no longer available on this computer. The recording "
+                "is safely saved and can still be opened later.",
+            )
+            return False
+        program, arguments = braid_launch_command(application, tiff_path)
+        try:
+            started = QProcess.startDetached(program, arguments)
+            if isinstance(started, tuple):
+                started = started[0]
+        except Exception as exc:
+            log.exception("Unable to start BRAID")
+            started = False
+            detail = str(exc)
+        else:
+            detail = f"Command: {program} {' '.join(arguments)}"
+        if started:
+            self.statusBar().showMessage("Opened recording in BRAID.", 5000)
+            return True
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setWindowTitle("Unable to Open BRAID")
+        dialog.setText(
+            "The recording is safely saved, but BRAID could not be started."
+        )
+        dialog.setDetailedText(detail)
+        dialog.exec_()
+        return False
+
+    def check_for_recoverable_recordings(self) -> None:
+        """Offer recovery for recordings left partial by an interrupted app run."""
+
+        try:
+            manifests = find_recoverable_manifests(config.BURST_ROOT)
+        except OSError as exc:
+            log.warning("Unable to scan for interrupted recordings: %s", exc)
+            return
+        for manifest_path in manifests:
+            folder_path = os.path.dirname(manifest_path)
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Warning)
+            dialog.setWindowTitle("Interrupted Recording Found")
+            dialog.setText(
+                "BURST found a recording that did not finish closing during an "
+                "earlier app session."
+            )
+            dialog.setInformativeText(
+                f"Run folder: {os.path.basename(folder_path)}\n\n"
+                "Recover checks the partial CSV and TIFF, preserves all readable "
+                "data, and marks the result for review."
+            )
+            recover_button = dialog.addButton("Recover Recording", QMessageBox.AcceptRole)
+            open_button = dialog.addButton("Open Run Folder", QMessageBox.ActionRole)
+            dialog.addButton("Later", QMessageBox.RejectRole)
+            recover_button.setToolTip(
+                "Validate the readable partial files and finalize them as a recovered recording"
+            )
+            open_button.setToolTip(
+                "Inspect the interrupted recording files without changing them"
+            )
+            dialog.exec_()
+            clicked = dialog.clickedButton()
+            if clicked is open_button:
+                self._open_recording_folder(folder_path)
+                continue
+            if clicked is not recover_button:
+                continue
+            try:
+                csv_path, tiff_path, summary = recover_partial_recording(manifest_path)
+            except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                failure = QMessageBox(self)
+                failure.setIcon(QMessageBox.Critical)
+                failure.setWindowTitle("Recording Recovery Failed")
+                failure.setText(
+                    "BURST could not safely finalize this interrupted recording. "
+                    "The partial files were left in place."
+                )
+                failure.setDetailedText(str(exc))
+                failure.exec_()
+                continue
+            self._current_run_folder = folder_path
+            self._last_recording_paths = {"csv": csv_path, "tiff": tiff_path}
+            self._last_recording_summary = summary
+            if hasattr(self, "playback_action"):
+                self.playback_action.setEnabled(True)
+            self._prompt_recording_completion()
+
+    @staticmethod
+    def _open_recording_folder(path: str):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+            log.error("Failed to open folder %s", path)
 
     @pyqtSlot(str)
     def _handle_recorder_warning(self, message: str):
@@ -1953,41 +2173,6 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         log.info("All threads cleaned up. Proceeding with close.")
         super().closeEvent(event)
-
-    def _maybe_prompt_open_folder(self):
-        """Ask to open the last recording folder when recording stops."""
-        if not self._current_fill_folder:
-            return
-
-        if not self._open_folder_prompt:
-            return
-
-        checkbox = QCheckBox("Never ask again")
-        mbox = QMessageBox(
-            QMessageBox.Question,
-            "Open Results Folder",
-            "Open the folder where the files were saved?",
-            QMessageBox.Yes | QMessageBox.No,
-            self,
-        )
-        mbox.setCheckBox(checkbox)
-        choice = mbox.exec_()
-
-        if checkbox.isChecked():
-            self._open_folder_prompt = False
-            save_app_setting(SETTING_OPEN_FOLDER_PROMPT, False)
-
-        if choice == QMessageBox.Yes:
-            path = self._current_fill_folder
-            try:
-                if sys.platform.startswith("win"):
-                    os.startfile(path)
-                elif sys.platform == "darwin":
-                    subprocess.Popen(["open", path])
-                else:
-                    subprocess.Popen(["xdg-open", path])
-            except Exception as e:
-                log.error(f"Failed to open folder {path}: {e}")
 
     def open_playback_window(self, ask_user=False):
         """Open a :class:`PlaybackWindow` with the last recording or ask for files."""

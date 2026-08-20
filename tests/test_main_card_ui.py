@@ -7,7 +7,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PyQt5.QtWidgets import QApplication, QComboBox
+    from PyQt5.QtWidgets import QApplication, QComboBox, QLabel
 
     app_path = str(Path(__file__).parents[1] / "buti_app")
     sys.path.insert(0, app_path)
@@ -17,15 +17,20 @@ try:
         from ui.control_panels.camera_info_panel import CameraInfoPanel
         from ui.control_panels.plot_control_panel import PlotControlPanel
         from ui.control_panels.top_control_panel import TopControlPanel
+        from ui.recording_completion_dialog import RecordingCompletionDialog
+        from utils.recording_summary import RecordingSummary
     finally:
         sys.path.remove(app_path)
 except ImportError:
     QApplication = None
     QComboBox = None
+    QLabel = None
     MainWindow = None
     CameraControlPanel = None
     CameraInfoPanel = None
     PlotControlPanel = None
+    RecordingCompletionDialog = None
+    RecordingSummary = None
     TopControlPanel = None
 
 
@@ -169,18 +174,55 @@ class MainCardUiTests(unittest.TestCase):
         self.assertFalse(panel.record_btn.isEnabled())
         panel.close()
 
-    def test_recording_completion_prompts_rename_before_open_folder(self):
+    def test_recording_completion_uses_one_combined_prompt(self):
         calls = []
 
         class CompletionHarness:
-            def _prompt_rename_recording_pair(self):
-                calls.append("rename")
-
-            def _maybe_prompt_open_folder(self):
-                calls.append("folder")
+            def _prompt_recording_completion(self):
+                calls.append("combined")
 
         MainWindow._run_recording_completion_prompts(CompletionHarness())
-        self.assertEqual(calls, ["rename", "folder"])
+        self.assertEqual(calls, ["combined"])
+
+    def test_recording_completion_dialog_collects_name_and_opens_folder_on_request(self):
+        dialog = RecordingCompletionDialog(
+            "recording",
+            "Run3",
+        )
+
+        self.assertEqual(dialog.recording_name(), "recording")
+        dialog.name_edit.setText("Sample A")
+        self.assertEqual(dialog.recording_name(), "Sample A")
+
+        open_requests = []
+        dialog.open_folder_requested.connect(lambda: open_requests.append(True))
+        dialog.open_folder_requested.emit()
+        self.assertEqual(open_requests, [True])
+        dialog.close()
+
+    def test_recording_completion_dialog_shows_integrity_and_optional_braid_action(self):
+        summary = RecordingSummary(
+            status="passed",
+            samples_written=12,
+            frames_written=12,
+            duration_s=4.25,
+            csv_size_bytes=1024,
+            tiff_size_bytes=2048,
+        )
+        dialog = RecordingCompletionDialog(
+            "recording",
+            "Run3",
+            summary=summary,
+            braid_application="/Applications/BRAID.app",
+        )
+
+        labels = [label.text() for label in dialog.findChildren(QLabel)]
+        self.assertIsNotNone(dialog.braid_button)
+        self.assertEqual(dialog.braid_button.text(), "Open in BRAID")
+        self.assertTrue(
+            any("Capture checks passed" in text for text in labels)
+        )
+        dialog.close()
 
 
 if __name__ == "__main__":

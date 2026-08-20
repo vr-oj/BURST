@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import config
 from .recording_files import validate_path_component
+from .recording_folders import is_recording_folder_name, next_run_folder_name
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,43 +38,33 @@ def list_session_names() -> list[str]:
         entry.name
         for entry in Path(get_date_folder()).iterdir()
         if entry.is_dir()
-        and not (
-            entry.name.startswith("Fill") and entry.name[4:].isdigit()
-        )
+        and not is_recording_folder_name(entry.name)
     )
 
 
-def get_next_fill_folder(session_name: str) -> str:
+def get_next_run_folder(session_name: str) -> str:
     """
     Create (if needed) a folder at:
-       BURST_ROOT/YYYY-MM-DD/Session Name/FillN
+       BURST_ROOT/YYYY-MM-DD/Session Name/RunN
     where YYYY-MM-DD = todayâ€™s date,
-    and N = smallest positive integer so that â€œFillNâ€ does not yet exist.
-    Returns the full path to the newly created â€œFillNâ€ folder.
+    and N is the smallest positive integer not already used by a RunN or
+    legacy FillN folder. Returns the full path to the new RunN folder.
 
     Example return:
-    ``/home/alice/Documents/BURST Results/2025-06-03/Experiment A/Fill1``
+    ``/home/alice/Documents/BURST Results/2025-06-03/Experiment A/Run1``
     """
     session_name = validate_path_component(session_name, label="Session name")
     session_folder = os.path.join(get_date_folder(), session_name)
     Path(session_folder).mkdir(parents=True, exist_ok=True)
 
-    # 2) Look for existing â€œFillâ€ subfolders (Fill1, Fill2, â€¦)
-    existing = []
-    for entry in os.listdir(session_folder):
-        if entry.startswith("Fill"):
-            suffix = entry[4:]
-            if suffix.isdigit():
-                existing.append(int(suffix))
+    new_run_name = next_run_folder_name(os.listdir(session_folder))
+    new_run_path = os.path.join(session_folder, new_run_name)
+    Path(new_run_path).mkdir(parents=True, exist_ok=True)
 
-    # 3) Pick the next unused integer
-    n = 1
-    while n in existing:
-        n += 1
+    return new_run_path
 
-    # 4) Create the new FillN folder
-    new_fill_name = f"Fill{n}"
-    new_fill_path = os.path.join(session_folder, new_fill_name)
-    Path(new_fill_path).mkdir(parents=True, exist_ok=True)
 
-    return new_fill_path
+def get_next_fill_folder(session_name: str) -> str:
+    """Compatibility alias for integrations using the pre-Run function name."""
+
+    return get_next_run_folder(session_name)

@@ -41,7 +41,7 @@ class PumpControlPanel(QGroupBox):
         self.set_rate_btn.clicked.connect(self._emit_rate)
         layout.addRow(self.set_rate_btn)
 
-        self.start_btn = QPushButton("Start Fill")
+        self.start_btn = QPushButton("Start Run")
         self.start_btn.setEnabled(False)
         self.start_btn.clicked.connect(self.pump_start_requested.emit)
         layout.addRow(self.start_btn)
@@ -58,5 +58,4 @@ class PumpControlPanel(QGroupBox):
         """Enable or disable pump controls based on BURST connection."""
         self.start_btn.setEnabled(connected)
         self.stop_btn.setEnabled(connected)
-
 
