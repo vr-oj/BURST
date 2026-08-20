@@ -130,7 +130,7 @@ remove that warning for an official public release.
 ### Building a Windows Release Installer
 
 BURST uses one version source: `buti_app/VERSION`. The current version is
-`1.3.0`. Update only that file when preparing another release.
+`1.4.0`. Update only that file when preparing another release.
 
 Install the requirements and pinned PyInstaller version once:
 
@@ -149,13 +149,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 The script checks the Python environment, runs all tests, builds BURST with the
 repository's PyInstaller spec, compiles the Inno Setup installer, and writes:
 
-- `installer_output\BURST_Setup_1.3.0.exe`
-- `installer_output\BURST_Setup_1.3.0.exe.sha256`
+- `installer_output\BURST_Setup_1.4.0.exe`
+- `installer_output\BURST_Setup_1.4.0.exe.sha256`
 
 BURST releases are built on the target Windows packaging computer and uploaded
 manually; GitHub Actions is not used. After the build passes hardware testing,
-merge the release commit into `main`, create the matching `v1.3.0` tag and
-GitHub release, paste the `1.3.0` section from `CHANGELOG.md`, and attach both
+merge the release commit into `main`, create the matching `v1.4.0` tag and
+GitHub release, paste the `1.4.0` section from `CHANGELOG.md`, and attach both
 files above.
 
 ---

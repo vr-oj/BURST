@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.0
 
 - Added selectable, remembered recording-completion sounds with preview and a
   softer default cue.
