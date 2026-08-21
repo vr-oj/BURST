@@ -2,6 +2,9 @@
 
 ## 1.4.0
 
+- Moved bounded diagnostic logging out of experiment results and into a clearly
+  named local application-data folder, added a Help-menu shortcut to it, and
+  made crash dialogs identify the exact file users should send for support.
 - Added selectable, remembered recording-completion sounds with preview and a
   softer default cue.
 - Changed Y-axis autoscaling to fit only force samples inside the visible

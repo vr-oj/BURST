@@ -70,6 +70,10 @@
   notification appears only when a newer version is available and links to the
   official installer download. **Help → Check for Updates…** runs the same
   check manually; offline automatic checks remain silent.
+- BURST keeps one small rotating diagnostic log outside the Results folder at
+  `%LOCALAPPDATA%\BURST\Logs\BURST-diagnostic.log`. If the app reports an
+  unexpected error, send that file with the problem report. Use **Help → Open
+  Diagnostic Log Folder** to find it; it never contains recording data.
 
 ---
 ## Under the Hood

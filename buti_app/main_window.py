@@ -927,6 +927,12 @@ class MainWindow(QMainWindow):
         hm.addAction(welcome_act)
         readme_act = QAction("&Open User Guide", self, triggered=self._open_readme)
         hm.addAction(readme_act)
+        diagnostic_log_act = QAction(
+            "Open &Diagnostic Log Folder",
+            self,
+            triggered=self._open_diagnostic_log_folder,
+        )
+        hm.addAction(diagnostic_log_act)
         update_act = QAction(
             "Check for &Updates…", self, triggered=lambda: self.start_update_check(True)
         )
@@ -1351,6 +1357,31 @@ class MainWindow(QMainWindow):
     def _open_readme(self):
         path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "README.md"))
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _open_diagnostic_log_folder(self):
+        try:
+            os.makedirs(config.DIAGNOSTIC_LOG_DIR, exist_ok=True)
+        except OSError as exc:
+            log.error("Could not create diagnostic log folder: %s", exc)
+            self._show_error_dialog(
+                "Diagnostic Log Unavailable",
+                "BURST could not open its diagnostic log folder.",
+                details=str(exc),
+            )
+            return
+
+        if not QDesktopServices.openUrl(
+            QUrl.fromLocalFile(config.DIAGNOSTIC_LOG_DIR)
+        ):
+            log.error(
+                "Failed to open diagnostic log folder %s",
+                config.DIAGNOSTIC_LOG_DIR,
+            )
+            self._show_error_dialog(
+                "Diagnostic Log Unavailable",
+                "BURST could not open its diagnostic log folder.",
+                details=config.DIAGNOSTIC_LOG_DIR,
+            )
 
     # ─── Toggle Serial Connection ────────────────────────────────────────────
     def _toggle_serial_connection(self):

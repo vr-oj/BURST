@@ -59,8 +59,8 @@ def braid_launch_command(
 ) -> tuple[str, list[str]]:
     """Return the detached-process command for opening one recording in BRAID."""
 
-    application = str(Path(application_path).expanduser())
-    recording = str(Path(recording_path).expanduser())
+    application = os.path.expanduser(application_path)
+    recording = os.path.expanduser(recording_path)
     if sys.platform == "darwin" and application.lower().endswith(".app"):
         # A fresh instance guarantees the argument is delivered even if BRAID is
         # already running; macOS does not forward ``--args`` to an old process.
