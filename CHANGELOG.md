@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Parse the BUTI v5.2 serial settings header and preserve its preload,
+  deformation, rates, cycles, wire diameter, constant tension, and experiment
+  type as appended columns in every sample row of the synchronized CSV. The
+  same snapshot is retained in TIFF metadata and the run recovery manifest.
+
 ## 1.4.0
 
 - Moved bounded diagnostic logging out of experiment results and into a clearly

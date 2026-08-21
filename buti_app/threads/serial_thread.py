@@ -10,6 +10,7 @@ from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QWaitCondition
 import queue
 
 import utils.config as config
+from utils.buti_metadata import ButiMetadataParser
 from utils.serial_activity import SerialActivityTracker
 
 log = logging.getLogger(__name__)
@@ -17,6 +18,8 @@ log = logging.getLogger(__name__)
 class SerialThread(QThread):
     data_ready = pyqtSignal(float, int, float, int, float)
     """Emits (time_s, frame_idx, distance, cycle, force)."""
+    settings_received = pyqtSignal(dict)
+    """Emits the typed settings from a complete BUTI firmware header."""
     stream_started = pyqtSignal()
     stream_stopped = pyqtSignal(str)
     error_occurred = pyqtSignal(str)  # For reporting errors back to the GUI
@@ -35,6 +38,7 @@ class SerialThread(QThread):
         self._stop_requested = False
         self._idle_timeout_enabled = True
         self._activity = SerialActivityTracker()
+        self._metadata_parser = ButiMetadataParser()
 
 
         # For sending commands (not used here, but kept for future)
@@ -137,6 +141,20 @@ class SerialThread(QThread):
                             log.debug(f"Raw serial data: {line}")
 
                             if not line:
+                                continue
+
+                            # BUTI v5.2 prints the active experiment settings
+                            # immediately before its numeric CSV heading. Keep
+                            # that header as structured metadata instead of
+                            # discarding it as non-sample serial traffic.
+                            settings = self._metadata_parser.feed_line(line)
+                            if settings is not None:
+                                if settings:
+                                    log.info(
+                                        "BUTI experiment settings received: %s",
+                                        settings,
+                                    )
+                                    self.settings_received.emit(settings)
                                 continue
 
                             # Some firmware builds interleave status/configuration

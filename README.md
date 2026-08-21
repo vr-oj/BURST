@@ -46,6 +46,12 @@
 - Active files and a small run manifest remain marked as partial until both
   outputs close. BURST periodically flushes them and offers to validate and
   recover readable data after an interrupted app session.
+- BUTI v5.2 experiment headers are synchronized while the serial connection is
+  active. The latest preload, deformation, rates, cycles, wire diameter,
+  constant tension, and experiment type are appended to every sample row in
+  the synchronized CSV. The original five telemetry columns remain first for
+  compatibility, and the same snapshot is retained in TIFF metadata and the
+  run recovery manifest.
 - Default save location is `~/Documents/BURST Results`. Set `BURST_RESULTS_DIR` (or the legacy `BUTI_RESULTS_DIR`) to override.
 - Playback tools support zoom, pan, drawn or exact pixel-coordinate ROI
   selection, exporting annotated frames, and cropping an ROI across the
