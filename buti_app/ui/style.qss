@@ -130,3 +130,29 @@ QDialog QPushButton:disabled, QMessageBox QPushButton:disabled {
     background-color: #5a5a5a;
     color: #999999;
 }
+
+QDialog QFrame[cssClass="subCard"] {
+    background-color: #454545;
+    border: 1px solid #666666;
+    border-radius: 7px;
+}
+QDialog QLabel[cssClass="detailLabel"] {
+    color: #c4c4c4;
+}
+QDialog QLabel[cssClass="detailValue"] {
+    color: #ffffff;
+    font-family: "Consolas", "Courier New", monospace;
+}
+QDialog QLabel[cssClass="integrityPassed"] {
+    color: #75df9b;
+    font-size: 12pt;
+    font-weight: bold;
+}
+QDialog QLabel[cssClass="integrityWarning"] {
+    color: #ffd166;
+    font-size: 12pt;
+    font-weight: bold;
+}
+QDialog QLabel[cssClass="integrityWarningDetail"] {
+    color: #ffe3a3;
+}

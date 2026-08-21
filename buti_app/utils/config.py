@@ -137,3 +137,9 @@ PLOT_DEFAULT_Y_MAX = 30  # Typical force range in mN
 APP_CONFIG_DIR = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
 CAMERA_PROFILES_DIR = os.path.join(APP_CONFIG_DIR, "camera_profiles")
 QDir().mkpath(CAMERA_PROFILES_DIR)
+
+# Diagnostic logs belong to the application, not to an experiment's results.
+# Keep them in a clearly named, user-local folder so they are easy to find and
+# send when troubleshooting without mixing them into recorded data.
+DIAGNOSTIC_LOG_DIR = os.path.join(APP_CONFIG_DIR, APP_NAME, "Logs")
+DIAGNOSTIC_LOG_PATH = os.path.join(DIAGNOSTIC_LOG_DIR, "BURST-diagnostic.log")

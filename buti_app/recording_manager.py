@@ -13,6 +13,13 @@ from PyQt5.QtGui import QImage
 
 from utils.config import MIN_FREE_SPACE_GB
 from utils.frame_transform import transform_qimage
+from utils.recording_recovery import (
+    complete_manifest,
+    create_partial_manifest,
+    discard_empty_partial_manifest,
+    finalize_partial_pair,
+)
+from utils.recording_summary import RecordingSummary
 
 
 log = logging.getLogger(__name__)
@@ -22,7 +29,7 @@ class RecordingManager(QObject):
     """Manage synchronized writing of force data and transformed camera frames."""
 
     ready_for_acquisition = pyqtSignal()
-    finalized = pyqtSignal(str, str)
+    finalized = pyqtSignal(str, str, object)
     finished = pyqtSignal()
     error_occurred = pyqtSignal(str)
     warning_occurred = pyqtSignal(str)
@@ -34,6 +41,7 @@ class RecordingManager(QObject):
         normalized_roi=None,
         mirror_horizontal=False,
         mirror_vertical=False,
+        acquisition_metadata=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -41,9 +49,13 @@ class RecordingManager(QObject):
         self.normalized_roi = tuple(normalized_roi) if normalized_roi else None
         self.mirror_horizontal = bool(mirror_horizontal)
         self.mirror_vertical = bool(mirror_vertical)
+        self.acquisition_metadata = dict(acquisition_metadata or {})
 
         self._csv_path = None
         self._tiff_path = None
+        self._final_csv_path = None
+        self._final_tiff_path = None
+        self._partial_manifest_path = None
         self.csv_file = None
         self.csv_writer = None
         self.tif_writer = None
@@ -59,6 +71,10 @@ class RecordingManager(QObject):
 
         self._frame_counter = 0
         self._last_device_time = 0
+        self._first_device_time = None
+        self._first_frame_index = None
+        self._last_frame_index = None
+        self._frame_index_issues = []
         self._frames_written = 0
         self._samples_written = 0
         self._pending_samples = deque()
@@ -67,6 +83,9 @@ class RecordingManager(QObject):
         self._finalize_timer.setSingleShot(True)
         self._finalize_timer.setInterval(2000)
         self._finalize_timer.timeout.connect(self._force_finalize)
+        self._recovery_flush_timer = QTimer(self)
+        self._recovery_flush_timer.setInterval(1000)
+        self._recovery_flush_timer.timeout.connect(self._flush_recovery_outputs)
 
     @pyqtSlot()
     def start_recording(self):
@@ -89,8 +108,14 @@ class RecordingManager(QObject):
             )
             return
 
-        self._csv_path = os.path.join(self.output_dir, f"{base_name}_force.csv")
-        self._tiff_path = os.path.join(self.output_dir, f"{base_name}_video.tif")
+        self._final_csv_path = os.path.join(
+            self.output_dir, f"{base_name}_force.csv"
+        )
+        self._final_tiff_path = os.path.join(
+            self.output_dir, f"{base_name}_video.tif"
+        )
+        self._csv_path = f"{self._final_csv_path}.partial"
+        self._tiff_path = f"{self._final_tiff_path}.partial"
         self._first_frame_shape = None
         self.is_recording = True
         self._accept_force = True
@@ -101,12 +126,30 @@ class RecordingManager(QObject):
         self._mismatch_reported = False
         self._frame_counter = 0
         self._last_device_time = 0
+        self._first_device_time = None
+        self._first_frame_index = None
+        self._last_frame_index = None
+        self._frame_index_issues.clear()
         self._frames_written = 0
         self._samples_written = 0
         self._pending_samples.clear()
 
+        try:
+            self._partial_manifest_path = create_partial_manifest(
+                self.output_dir,
+                final_csv_name=os.path.basename(self._final_csv_path),
+                final_tiff_name=os.path.basename(self._final_tiff_path),
+                partial_csv_name=os.path.basename(self._csv_path),
+                partial_tiff_name=os.path.basename(self._tiff_path),
+                acquisition=self.acquisition_metadata,
+            )
+        except OSError as exc:
+            self.is_recording = False
+            self._fail_setup(f"Unable to create the recording recovery manifest: {exc}")
+            return
+
         log.info(
-            "Ready to record -> CSV: %s; TIFF: %s",
+            "Ready to record partial files -> CSV: %s; TIFF: %s",
             self._csv_path,
             self._tiff_path,
         )
@@ -132,8 +175,28 @@ class RecordingManager(QObject):
             self.stop_recording()
             return False
         self._got_first_sample = True
+        self._recovery_flush_timer.start()
         log.info("Recording files opened: %s and %s", self._csv_path, self._tiff_path)
         return True
+
+    @pyqtSlot()
+    def _flush_recovery_outputs(self):
+        """Periodically push buffered recording data out for crash recovery."""
+
+        try:
+            if self.csv_file:
+                self.csv_file.flush()
+            if self.tif_writer:
+                file_handle = getattr(self.tif_writer, "filehandle", None)
+                if file_handle is not None and hasattr(file_handle, "flush"):
+                    file_handle.flush()
+        except Exception as exc:
+            self._recovery_flush_timer.stop()
+            self._close_failed = True
+            log.exception("Unable to flush partial recording files")
+            self.error_occurred.emit(
+                f"Unable to prepare recording data for crash recovery: {exc}"
+            )
 
     @pyqtSlot(float, int, float, int, float)
     def append_force(self, time_s, frame_idx, distance, cycle, force):
@@ -143,13 +206,25 @@ class RecordingManager(QObject):
             return
         try:
             self.csv_writer.writerow([time_s, frame_idx, distance, cycle, force])
+            if self._first_device_time is None:
+                self._first_device_time = time_s
+                self._first_frame_index = int(frame_idx)
+            elif self._last_frame_index is not None:
+                expected = self._last_frame_index + 1
+                if int(frame_idx) != expected and len(self._frame_index_issues) < 5:
+                    self._frame_index_issues.append(
+                        f"Device frame index changed from {self._last_frame_index} "
+                        f"to {int(frame_idx)}."
+                    )
             self._last_device_time = time_s
+            self._last_frame_index = int(frame_idx)
             self._samples_written += 1
             self._pending_samples.append(
                 (time_s, frame_idx, distance, cycle, force)
             )
         except Exception as exc:
             log.exception("Error writing CSV row")
+            self._close_failed = True
             self.error_occurred.emit(f"Error writing CSV: {exc}")
         self._check_stop_condition()
 
@@ -182,9 +257,9 @@ class RecordingManager(QObject):
             self.tif_writer.write(arr, description=json.dumps(metadata))
             self._frame_counter += 1
             self._frames_written += 1
-            self._last_device_time = time_s
         except Exception as exc:
             log.exception("Error writing TIFF frame %d", self._frame_counter)
+            self._close_failed = True
             self.error_occurred.emit(f"Error writing video frame: {exc}")
         self._check_stop_condition()
 
@@ -232,6 +307,8 @@ class RecordingManager(QObject):
         self.is_recording = False
         self._accept_force = False
         self._finalize_timer.stop()
+        self._recovery_flush_timer.stop()
+        pending_samples = len(self._pending_samples)
         close_ok = not self._close_failed
         if self._got_first_sample and self._frames_written != self._samples_written:
             self._report_mismatch()
@@ -258,7 +335,72 @@ class RecordingManager(QObject):
             self.csv_writer = None
 
         if close_ok and self._got_first_sample and self._samples_written > 0:
-            self.finalized.emit(self._csv_path, self._tiff_path)
+            issues = list(self._frame_index_issues)
+            if self._frames_written != self._samples_written:
+                issues.append(
+                    f"Counts differ: {self._samples_written} force samples and "
+                    f"{self._frames_written} video frames."
+                )
+            if pending_samples:
+                issues.append(
+                    f"{pending_samples} force sample(s) had no paired video frame."
+                )
+            duration = (
+                0.0
+                if self._first_device_time is None
+                else max(0.0, self._last_device_time - self._first_device_time)
+            )
+            summary = RecordingSummary(
+                status="warning" if issues else "passed",
+                samples_written=self._samples_written,
+                frames_written=self._frames_written,
+                duration_s=duration,
+                pending_samples=pending_samples,
+                first_frame_index=self._first_frame_index,
+                last_frame_index=self._last_frame_index,
+                issues=issues,
+            )
+            try:
+                final_csv, final_tiff = finalize_partial_pair(
+                    self._csv_path,
+                    self._tiff_path,
+                    self._final_csv_path,
+                    self._final_tiff_path,
+                )
+            except Exception as exc:
+                close_ok = False
+                log.exception("Unable to finalize partial recording files")
+                self.error_occurred.emit(
+                    f"Recording files remain recoverable but could not be finalized: {exc}"
+                )
+            else:
+                summary.csv_size_bytes = os.path.getsize(final_csv)
+                summary.tiff_size_bytes = os.path.getsize(final_tiff)
+                try:
+                    complete_manifest(
+                        self._partial_manifest_path,
+                        summary,
+                        csv_path=final_csv,
+                        tiff_path=final_tiff,
+                    )
+                except Exception as exc:
+                    log.exception("Unable to complete the recording manifest")
+                    summary.status = "warning"
+                    summary.issues.append(
+                        f"The recording manifest could not be finalized: {exc}"
+                    )
+                    discard_empty_partial_manifest(self._partial_manifest_path)
+                self.finalized.emit(final_csv, final_tiff, summary)
+        elif not self._got_first_sample:
+            discard_empty_partial_manifest(self._partial_manifest_path)
+            for path in (self._csv_path, self._tiff_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        log.warning("Unable to remove unused partial file %s", path)
         self._got_first_sample = False
         self._frame_counter = 0
         log.info("Recording stopped and files closed.")

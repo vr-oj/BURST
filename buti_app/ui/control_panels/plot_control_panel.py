@@ -285,7 +285,7 @@ class PlotControlPanel(QWidget):
             "Follows elapsed recording time" if x_auto else "Uses the limits above"
         )
         self.y_mode_label.setText(
-            "Fits incoming force data" if y_auto else "Uses the limits above"
+            "Fits data in the visible X range" if y_auto else "Uses the limits above"
         )
 
     def is_autoscale_x(self) -> bool:

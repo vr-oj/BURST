@@ -5,6 +5,7 @@ import os
 import re
 import traceback
 import logging
+import platform
 from logging.handlers import RotatingFileHandler
 try:
     import imagingcontrol4 as ic4  # type: ignore
@@ -12,8 +13,14 @@ except ImportError:  # pragma: no cover - optional dependency
     ic4 = None
 
 from PyQt5.QtWidgets import QApplication, QMessageBox, QStyleFactory
-from PyQt5.QtCore import Qt, QCoreApplication
-from PyQt5.QtGui import QIcon, QSurfaceFormat, QPalette, QColor
+from PyQt5.QtCore import Qt, QCoreApplication, QUrl
+from PyQt5.QtGui import (
+    QIcon,
+    QSurfaceFormat,
+    QPalette,
+    QColor,
+    QDesktopServices,
+)
 import utils.config as config
 from utils.config import APP_NAME, APP_VERSION as CONFIG_APP_VERSION
 from utils.path_helpers import resource_path
@@ -24,29 +31,68 @@ logging.getLogger("matplotlib").setLevel(logging.INFO)
 logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
 logging.getLogger("fontTools").setLevel(logging.WARNING)
 
-# ------------------------------
-# Configure Python-level logging
-# ------------------------------
-log_file_path = os.path.join(config.BURST_RESULTS_DIR, "buti_app.log")
-
-# Create the File Handler (capped at 5MB)
-file_handler = RotatingFileHandler(
-    log_file_path,
-    maxBytes=5 * 1024 * 1024,
-    backupCount=1
-)
-# Create the Console Handler (for output to terminal)
-console_handler = logging.StreamHandler(sys.stdout)
-
-# Initialize logging with both output handlers
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s [%(name)s:%(lineno)d] - %(message)s",
-    handlers=[file_handler, console_handler]
-)
-
 log = logging.getLogger(__name__)
-log.info(f"Application logging initialized. Writing logs to: {log_file_path}")
+
+
+def configure_diagnostic_logging(log_path=None):
+    """Start bounded application logging and return the active log path.
+
+    Logging is configured only when the real application starts. Importing
+    BURST modules for tests or utilities therefore does not create a log file.
+    """
+    log_path = log_path or config.DIAGNOSTIC_LOG_PATH
+    console_handler = logging.StreamHandler(sys.stdout)
+    handlers = [console_handler]
+    active_log_path = None
+
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        handlers.insert(
+            0,
+            RotatingFileHandler(
+                log_path,
+                maxBytes=2 * 1024 * 1024,
+                backupCount=1,
+                encoding="utf-8",
+            ),
+        )
+        active_log_path = log_path
+    except OSError as exc:
+        # A log-folder permission problem should not prevent BURST from
+        # launching. The console still receives the diagnostic message.
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(levelname)s [%(name)s:%(lineno)d] - %(message)s",
+            handlers=handlers,
+            force=True,
+        )
+        log.exception("Could not create the diagnostic log at %s: %s", log_path, exc)
+        return None
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s [%(name)s:%(lineno)d] - %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+    log.info(
+        "BURST v%s started | Python %s | %s | frozen=%s",
+        CONFIG_APP_VERSION or "Unknown",
+        platform.python_version(),
+        platform.platform(),
+        bool(getattr(sys, "frozen", False)),
+    )
+    log.info("Diagnostic log: %s", active_log_path)
+    return active_log_path
+
+
+def flush_diagnostic_log():
+    """Flush all logging handlers so a crash report is ready to send."""
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except (OSError, ValueError):
+            pass
 
 
 # === load_app_setting / save_app_setting stubs if missing ===
@@ -116,6 +162,8 @@ def load_processed_qss(path):
 
 
 def main_app_entry():
+    active_log_path = configure_diagnostic_logging()
+
     # ─── Set Default OpenGL 3.3 Core Profile ─────────────────────────────
     fmt = QSurfaceFormat()
     fmt.setRenderableType(QSurfaceFormat.OpenGL)
@@ -209,16 +257,38 @@ def main_app_entry():
     def custom_exception_handler(exc_type, value, tb):
         err_msg = "".join(traceback.format_exception(exc_type, value, tb))
         log.critical(f"UNHANDLED PYTHON EXCEPTION:\n{err_msg}")
+        flush_diagnostic_log()
+
+        if active_log_path:
+            log_instructions = (
+                "A diagnostic log was saved here:\n"
+                f"{active_log_path}\n\n"
+                "Please send BURST-diagnostic.log when reporting this problem."
+            )
+        else:
+            log_instructions = (
+                "BURST could not write a diagnostic log. Copy the error details "
+                "below when reporting this problem."
+            )
 
         dlg = QMessageBox(
             QMessageBox.Critical,
             f"{APP_NAME} - Critical Error",
             "An unexpected error occurred. The application may be unstable.\n"
-            "Check the logs for details.",
+            f"\n{log_instructions}",
             QMessageBox.Ok,
         )
         dlg.setDetailedText(err_msg)
+        open_log_folder_button = None
+        if active_log_path:
+            open_log_folder_button = dlg.addButton(
+                "Open Log Folder", QMessageBox.ActionRole
+            )
         dlg.exec_()
+        if dlg.clickedButton() is open_log_folder_button:
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(os.path.dirname(active_log_path))
+            )
 
     sys.excepthook = custom_exception_handler
 
@@ -250,6 +320,8 @@ def main_app_entry():
     welcome = WelcomeDialog(parent=main_win)
     if not getattr(welcome, "_skip", False):
         welcome.exec_()
+
+    main_win.check_for_recoverable_recordings()
 
     # Match BRAID's silent startup behavior, after the welcome dialog is out
     # of the way so an available-update prompt cannot compete with it.

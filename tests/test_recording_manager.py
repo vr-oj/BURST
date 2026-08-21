@@ -42,7 +42,11 @@ class RecordingManagerTests(unittest.TestCase):
                     mirror_horizontal=True,
                 )
                 finalized = []
-                manager.finalized.connect(lambda csv_path, tif_path: finalized.append((csv_path, tif_path)))
+                manager.finalized.connect(
+                    lambda csv_path, tif_path, summary: finalized.append(
+                        (csv_path, tif_path, summary)
+                    )
+                )
                 manager.start_recording()
 
                 image = QImage(4, 2, QImage.Format_Grayscale8)
@@ -52,12 +56,19 @@ class RecordingManagerTests(unittest.TestCase):
 
                 manager.append_force(1.25, 7, 0.5, 2, 3.5)
                 manager.append_frame(image, None)
+                manager._flush_recovery_outputs()
                 manager.request_stop()
             finally:
                 recording_manager_module.MIN_FREE_SPACE_GB = original_minimum
 
             self.assertEqual(len(finalized), 1)
-            csv_path, tif_path = finalized[0]
+            csv_path, tif_path, summary = finalized[0]
+            self.assertEqual(summary.status, "passed")
+            self.assertEqual(summary.samples_written, 1)
+            self.assertEqual(summary.frames_written, 1)
+            self.assertFalse(Path(f"{csv_path}.partial").exists())
+            self.assertFalse(Path(f"{tif_path}.partial").exists())
+            self.assertTrue((Path(directory) / "burst-run.json").exists())
             with open(csv_path, newline="") as csv_file:
                 rows = list(csv.reader(csv_file))
             self.assertEqual(
