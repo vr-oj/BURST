@@ -131,6 +131,8 @@ class MainWindow(QMainWindow):
         self._last_recording_paths = {"tiff": None, "csv": None}
         self._serial_start_sent = False
         self._device_run_active = False
+        self._buti_settings = {}
+        self._buti_settings_received_at = None
         self._recording_state = "idle"
         self._current_session_name = None
         self._recording_had_output = False
@@ -1405,6 +1407,8 @@ class MainWindow(QMainWindow):
                 return
 
             self._serial_start_sent = False
+            self._buti_settings = {}
+            self._buti_settings_received_at = None
             log.info(f"Starting SerialThread on port: {port}")
             try:
                 # If there is any leftover object, force‐stop and delete it
@@ -1426,6 +1430,9 @@ class MainWindow(QMainWindow):
                     self._handle_serial_stream_stopped
                 )
                 self._serial_thread.data_ready.connect(self._handle_new_serial_data)
+                self._serial_thread.settings_received.connect(
+                    self._handle_buti_settings_received
+                )
                 self._serial_thread.error_occurred.connect(self._handle_serial_error)
                 self._serial_thread.status_changed.connect(
                     self._handle_serial_status_change
@@ -1758,7 +1765,7 @@ class MainWindow(QMainWindow):
         elif resolution is not None:
             resolution = str(resolution)
         roi = self.camera_widget.normalized_roi()
-        return {
+        metadata = {
             "application": APP_NAME,
             "application_version": APP_VERSION,
             "session": self._current_session_name,
@@ -1770,6 +1777,22 @@ class MainWindow(QMainWindow):
                 "mirror_vertical": self._mirror_vertical,
             },
         }
+        if self._buti_settings:
+            metadata["buti_settings"] = {
+                **self._buti_settings,
+                "received_at": self._buti_settings_received_at,
+                "source": "serial_header",
+            }
+        return metadata
+
+    @pyqtSlot(dict)
+    def _handle_buti_settings_received(self, settings: dict) -> None:
+        """Retain the latest BUTI header for the next run manifest."""
+
+        self._buti_settings.update(settings)
+        self._buti_settings_received_at = datetime.now().astimezone().isoformat()
+        log.info("Synchronized BUTI experiment settings: %s", self._buti_settings)
+        self.statusBar().showMessage("BUTI experiment settings synchronized.", 4000)
 
     @pyqtSlot()
     def _on_recorder_ready(self):

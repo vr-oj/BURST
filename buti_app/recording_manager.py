@@ -12,6 +12,7 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage
 
 from utils.config import MIN_FREE_SPACE_GB
+from utils.buti_metadata import BUTI_CSV_COLUMNS, BUTI_SETTINGS_TO_CSV
 from utils.frame_transform import transform_qimage
 from utils.recording_recovery import (
     complete_manifest,
@@ -50,6 +51,14 @@ class RecordingManager(QObject):
         self.mirror_horizontal = bool(mirror_horizontal)
         self.mirror_vertical = bool(mirror_vertical)
         self.acquisition_metadata = dict(acquisition_metadata or {})
+        raw_buti_settings = self.acquisition_metadata.get("buti_settings", {})
+        self.buti_settings = (
+            dict(raw_buti_settings) if isinstance(raw_buti_settings, dict) else {}
+        )
+        self._buti_csv_values = {
+            csv_column: self.buti_settings.get(settings_key, "")
+            for settings_key, csv_column in BUTI_SETTINGS_TO_CSV.items()
+        }
 
         self._csv_path = None
         self._tiff_path = None
@@ -164,9 +173,10 @@ class RecordingManager(QObject):
         try:
             self.csv_file = open(self._csv_path, "w", newline="")
             self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow(
-                ["time_s", "frame_index", "distance", "cycle", "force"]
-            )
+            columns = ["time_s", "frame_index", "distance", "cycle", "force"]
+            if self.buti_settings:
+                columns.extend(BUTI_CSV_COLUMNS)
+            self.csv_writer.writerow(columns)
             self.tif_writer = tifffile.TiffWriter(self._tiff_path, bigtiff=True)
         except Exception as exc:
             log.exception("Failed to open recording output")
@@ -205,7 +215,12 @@ class RecordingManager(QObject):
         if not self._got_first_sample and not self._open_outputs():
             return
         try:
-            self.csv_writer.writerow([time_s, frame_idx, distance, cycle, force])
+            row = [time_s, frame_idx, distance, cycle, force]
+            if self.buti_settings:
+                row.extend(
+                    self._buti_csv_values[column] for column in BUTI_CSV_COLUMNS
+                )
+            self.csv_writer.writerow(row)
             if self._first_device_time is None:
                 self._first_device_time = time_s
                 self._first_frame_index = int(frame_idx)
@@ -254,6 +269,8 @@ class RecordingManager(QObject):
                 "force": force,
                 "frame_transform": transform_metadata,
             }
+            if self.buti_settings:
+                metadata["buti_settings"] = self.buti_settings
             self.tif_writer.write(arr, description=json.dumps(metadata))
             self._frame_counter += 1
             self._frames_written += 1
