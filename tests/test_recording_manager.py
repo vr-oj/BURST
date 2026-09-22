@@ -55,7 +55,8 @@ class RecordingManagerTests(unittest.TestCase):
                         image.setPixelColor(x, y, QColor(value, value, value))
 
                 manager.append_force(1.25, 7, 0.5, 2, 3.5)
-                manager.append_frame(image, None)
+                # Raw metadata can come from any SDK; recording must use the QImage.
+                manager.append_frame(image, {"backend": "synthetic", "frame_id": 42})
                 manager._flush_recovery_outputs()
                 manager.request_stop()
             finally:

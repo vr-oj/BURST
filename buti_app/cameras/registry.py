@@ -2,13 +2,14 @@ import importlib
 import logging
 from .ic4_backend import IC4Backend
 from .opencv_backend import OpenCVBackend
+from .spinnaker_backend import SpinnakerBackend
 
 log = logging.getLogger(__name__)
 
 
 class CameraRegistry:
     """Extend backend_types to register another transport (for example GenTL)."""
-    backend_types = (IC4Backend, OpenCVBackend)
+    backend_types = (IC4Backend, SpinnakerBackend, OpenCVBackend)
 
     def __init__(self, backend_filter="auto", importer=importlib.import_module):
         self.backends = {}
