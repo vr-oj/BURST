@@ -63,7 +63,7 @@ _camera_backend_env = (
 if _camera_backend_env:
     CAMERA_BACKEND = _camera_backend_env.strip().lower()
 else:
-    CAMERA_BACKEND = "ic4" if sys.platform.startswith("win") else "opencv"
+    CAMERA_BACKEND = "auto"  # Explicit legacy values remain diagnostic backend filters
 
 
 DEFAULT_SERIAL_BAUD_RATE = 460800

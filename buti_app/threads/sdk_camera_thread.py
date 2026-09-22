@@ -4,12 +4,13 @@ import logging
 
 try:
     import imagingcontrol4 as ic4  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency
+except Exception:  # Optional SDK may be installed with missing runtime DLLs
     ic4 = None
 
 import numpy as np
 
 from utils.config import DEFAULT_FPS
+from cameras.controls import CameraController, IC4Controls
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QImage
@@ -37,6 +38,7 @@ class SDKCameraThread(QThread):
         super().__init__(parent)
         if ic4 is None:
             raise RuntimeError("imagingcontrol4 is not available on this system.")
+        self.controller = CameraController()
         self.grabber = None
         self._stop_requested = False
 
@@ -191,7 +193,8 @@ class SDKCameraThread(QThread):
                 log.warning(f"SDKCameraThread: Could not disable TriggerMode: {e}")
 
             # ─── Signal “grabber_ready” so UI can enable controls ────────────────
-            self.grabber_ready.emit()
+            adapter = IC4Controls(self.grabber)
+            self.controller.open(adapter)
 
             # ─── Build QueueSink requesting Mono8 (fallback to native PF if needed)─
             try:
@@ -223,13 +226,11 @@ class SDKCameraThread(QThread):
             )
 
             # ─── Frame loop: IC4 calls frames_queued() whenever a new buffer is ready ─
+            self.controller.service(adapter)
+            self.grabber_ready.emit()
             while not self._stop_requested:
+                self.controller.service(adapter)
                 self.msleep(10)
-
-            # ─── Stop streaming & close device ───────────────────────────────────
-            self.grabber.stream_stop()
-            self.grabber.device_close()
-            log.info("SDKCameraThread: Streaming stopped, device closed.")
 
         except Exception as e:
             msg = str(e)
@@ -239,8 +240,18 @@ class SDKCameraThread(QThread):
             self.error.emit(msg, code_str)
 
         finally:
-            # All cleanup is handled by MainWindow once threads have stopped.
-            pass
+            self.controller.close()
+            if self.grabber is not None:
+                try:
+                    self.grabber.stream_stop()
+                except Exception:
+                    pass
+                try:
+                    self.grabber.device_close()
+                except Exception as exc:
+                    log.warning("IC4 device close failed: %s", exc)
+            self._sink = None
+            self.grabber = None
 
     def frames_queued(self, sink):
         """
@@ -265,7 +276,7 @@ class SDKCameraThread(QThread):
             qimg = QImage(gray8.data, w, h, gray8.strides[0], QImage.Format_Grayscale8)
 
             # Emit to the UI
-            self.frame_ready.emit(qimg, buf)
+            self.frame_ready.emit(qimg.copy(), buf)
 
         except Exception as e:
             log.error(

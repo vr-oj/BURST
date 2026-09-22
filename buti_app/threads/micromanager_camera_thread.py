@@ -19,12 +19,14 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QImage
 
 from utils.config import DEFAULT_FPS
+from cameras.controls import CameraController, EmptyControls
+from cameras.opencv_backend import open_capture
 
 log = logging.getLogger(__name__)
 
 try:  # Optional dependency, only needed for the OpenCV backend
     import cv2  # type: ignore
-except ImportError:  # pragma: no cover - OpenCV is optional
+except Exception:  # Optional native dependency may fail to load
     cv2 = None
 
 
@@ -38,12 +40,13 @@ class DevCameraSource:
 class DevCameraThread(QThread):
     """Drop-in replacement for :class:`SDKCameraThread` when IC4 is absent."""
 
-    grabber_ready = pyqtSignal()  # Kept for API parity; never emitted here.
+    grabber_ready = pyqtSignal()
     frame_ready = pyqtSignal(QImage, object)
     error = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.controller = CameraController()
         self._stop_requested = False
         self._resolution = None  # (width, height, pixel_format)
         self._source: DevCameraSource = DevCameraSource(backend="opencv")
@@ -96,7 +99,6 @@ class DevCameraThread(QThread):
     # QThread implementation
     # ------------------------------------------------------------------
     def run(self):
-        self._stop_requested = False
         backend = self._source.backend.lower()
 
         if backend != "opencv":
@@ -113,7 +115,15 @@ class DevCameraThread(QThread):
                 "dev-camera-opencv-missing",
             )
             return
-        self._run_opencv_backend()
+        try:
+            self._run_opencv_backend()
+        except Exception as exc:
+            self.error.emit(f"OpenCV camera failed: {exc}", "opencv-acquisition")
+        finally:
+            self.controller.close()
+            if self._capture is not None:
+                self._capture.release()
+                self._capture = None
 
     # ------------------------------------------------------------------
     # Backend helpers
@@ -122,7 +132,7 @@ class DevCameraThread(QThread):
         assert cv2 is not None  # Guarded by caller
 
         index = self._source.index
-        capture = cv2.VideoCapture(index)
+        capture = open_capture(cv2, index)
         if not capture or not capture.isOpened():
             self.error.emit(
                 f"Unable to open OpenCV VideoCapture index {index}.",
@@ -152,6 +162,9 @@ class DevCameraThread(QThread):
 
         sleep_ms = max(1, int(1000 / max(self._fps, 1)))
 
+        adapter = EmptyControls()
+        self.controller.open(adapter)
+        self.grabber_ready.emit()
         try:
             while not self._stop_requested:
                 ok, frame = capture.read()
@@ -162,9 +175,11 @@ class DevCameraThread(QThread):
                 if frame is None:
                     continue
 
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                h, w, _ = rgb.shape
-                qimg = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy()
+                mono = self._resolution and self._resolution[2] == "Mono8"
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY if mono else cv2.COLOR_BGR2RGB)
+                h, w = rgb.shape[:2]
+                fmt = QImage.Format_Grayscale8 if mono else QImage.Format_RGB888
+                qimg = QImage(rgb.data, w, h, rgb.strides[0], fmt).copy()
                 self.frame_ready.emit(qimg, rgb)
                 self._frame_counter += 1
                 self.msleep(sleep_ms)

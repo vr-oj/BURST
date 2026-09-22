@@ -8,11 +8,6 @@ import csv
 import json
 import time
 from datetime import datetime
-try:
-    import imagingcontrol4 as ic4  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency
-    ic4 = None
-
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -109,8 +104,7 @@ from ui.style_constants import PANEL_STYLESHEET
 from ui.canvas.force_plot_widget import ForcePlotWidget
 
 from threads.serial_thread import SerialThread
-from threads.sdk_camera_thread import SDKCameraThread
-from threads.micromanager_camera_thread import DevCameraThread, DevCameraSource
+from cameras import CameraRegistry
 from recording_manager import RecordingManager
 from utils.utils import list_serial_ports
 from playback_window import PlaybackWindow
@@ -180,34 +174,7 @@ class MainWindow(QMainWindow):
         # Plotting
         self.force_plot_widget = None
 
-        self._ic4_available = ic4 is not None
-        self._camera_backend = config.CAMERA_BACKEND
-        if self._camera_backend == "ic4" and not self._ic4_available:
-            log.warning(
-                "IC4 backend requested but imagingcontrol4 is unavailable; falling back to OpenCV backend."
-            )
-            self._camera_backend = "opencv"
-
-        backend = self._camera_backend if self._camera_backend in {"ic4", "opencv"} else "opencv"
-
-        cam_index_env = os.environ.get("BURST_CAMERA_INDEX") or os.environ.get("BUTI_CAMERA_INDEX")
-        try:
-            cam_index = int(cam_index_env) if cam_index_env is not None else 0
-        except ValueError:
-            cam_index = 0
-
-        self._developer_mode = config.DEV_MODE or backend != "ic4"
-        self._dev_camera_source = DevCameraSource(
-            backend="opencv",
-            index=cam_index,
-            name="OpenCV Camera",
-        )
-
-        if self._developer_mode:
-            log.info(
-                "Developer camera backend active (%s).",
-                self._dev_camera_source.backend,
-            )
+        self.camera_registry = CameraRegistry(config.CAMERA_BACKEND)
         self._init_paths_and_icons()
         self._init_completion_sound()
         self._build_console_log_dock()
@@ -474,56 +441,20 @@ class MainWindow(QMainWindow):
         combo.view().setMinimumWidth(popup_width)
 
     def _populate_device_list(self):
+        if self.camera_thread is not None and self.camera_thread.isRunning():
+            self.statusBar().showMessage("Stop the camera before refreshing devices.", 3000)
+            return
+        previous = self.device_combo.currentData()
         self.device_combo.clear()
         self.device_combo.addItem("Choose camera…", None)
-
-        if self._camera_backend == "ic4" and ic4 is not None:
-            try:
-                device_list = ic4.DeviceEnum.devices()
-            except Exception as e:
-                log.error(f"Failed to enumerate IC4 devices: {e}")
-                device_list = []
-
-            if not device_list:
-                log.info("IC4 DeviceEnum returned no devices.")
-            else:
-                for idx, dev in enumerate(device_list):
-                    log.info(
-                        "IC4 device %s = %r (S/N %r)",
-                        idx,
-                        dev.model_name,
-                        dev.serial,
-                    )
-                    display_str = f"{dev.model_name}  (S/N: {dev.serial})"
-                    self.device_combo.addItem(display_str, dev)
-
-            if self.device_combo.count() == 2:
-                self.device_combo.setCurrentIndex(1)
-            self._fit_combo_popup(self.device_combo)
-            return
-
-        label = "OpenCV Camera (developer mode)"
-        self.device_combo.addItem(label, self._dev_camera_source)
-        if self.device_combo.count() == 2:
-            self.device_combo.setCurrentIndex(1)
+        selected = 0
+        for device in self.camera_registry.discover_cameras():
+            self.device_combo.addItem(device.display_name, device)
+            if previous and (device.backend, device.id) == (previous.backend, previous.id):
+                selected = self.device_combo.count() - 1
+        if selected or self.device_combo.count() == 2:
+            self.device_combo.setCurrentIndex(selected or 1)
         self._fit_combo_popup(self.device_combo)
-
-    def _populate_dev_resolutions(self, dev_info: DevCameraSource):
-        presets = [
-            ("640x480 (Mono8)", (640, 480, "Mono8")),
-            ("960x720 (Mono8)", (960, 720, "Mono8")),
-            ("1280x720 (RGB8)", (1280, 720, "RGB8")),
-        ]
-
-        if dev_info.backend == "opencv":
-            presets.insert(0, ("Camera Default", (0, 0, "RGB8")))
-
-        for label, data in presets:
-            self.resolution_combo.addItem(label, data)
-
-        if self.resolution_combo.count() > 1:
-            self.resolution_combo.setCurrentIndex(1)
-        self._fit_combo_popup(self.resolution_combo)
 
     def _refresh_serial_port_list(self):
         ports = list_serial_ports()
@@ -547,65 +478,17 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(int)
     def _on_device_selected(self, index):
-        """
-        Called whenever the user picks a different camera in the “Device” combo.
-        Open it briefly, enumerate PixelFormat × (W,H), then close.
-        """
+        """Populate modes through the selected backend, with no native SDK objects."""
         if self.camera_widget is not None:
             self.camera_widget.clear_roi()
-        dev_info = self.device_combo.itemData(index)
+        device = self.device_combo.itemData(index)
         self.resolution_combo.clear()
         self.resolution_combo.addItem("Choose resolution…", None)
-
-        if not dev_info:
-            self._fit_combo_popup(self.resolution_combo)
-            return
-
-        if isinstance(dev_info, DevCameraSource):
-            self._populate_dev_resolutions(dev_info)
-            return
-
-        if ic4 is None:
-            log.error("IC4 backend selected but imagingcontrol4 is unavailable.")
-            return
-
-        grab = ic4.Grabber()
-        try:
-            grab.device_open(dev_info)
-
-            # Force Continuous acquisition if possible
-            acq_node = grab.device_property_map.find_enumeration("AcquisitionMode")
-            if acq_node:
-                names = [e.name for e in acq_node.entries]
-                if "Continuous" in names:
-                    acq_node.value = "Continuous"
-                else:
-                    acq_node.value = names[0]
-
-            pf_node = grab.device_property_map.find_enumeration("PixelFormat")
-            if pf_node:
-                for entry in pf_node.entries:
-                    pf_name = entry.name
-                    try:
-                        pf_node.value = pf_name
-                        w_prop = grab.device_property_map.find_integer("Width")
-                        h_prop = grab.device_property_map.find_integer("Height")
-                        if w_prop and h_prop:
-                            w = w_prop.value
-                            h = h_prop.value
-                            display_str = f"{w}×{h} ({pf_name})"
-                            self.resolution_combo.addItem(display_str, (w, h, pf_name))
-                    except Exception:
-                        # skip any PF that fails
-                        pass
-
-        except Exception as e:
-            log.error(f"Failed to get formats for {dev_info}: {e}")
-        finally:
-            try:
-                grab.device_close()
-            except Exception:
-                pass
+        if device:
+            for mode in self.camera_registry.list_modes(device):
+                self.resolution_combo.addItem(mode.display_name, mode.as_tuple())
+            if self.resolution_combo.count() > 1:
+                self.resolution_combo.setCurrentIndex(1)
         self._fit_combo_popup(self.resolution_combo)
 
     @pyqtSlot()
@@ -674,45 +557,21 @@ class MainWindow(QMainWindow):
             w, h, pf_name = resdata
             self._last_camera_frame_monotonic = None
 
-            if self._camera_backend == "ic4" and ic4 is not None:
-                # Instantiate the SDK camera thread
-                self.camera_thread = SDKCameraThread(parent=self)
-                self.camera_thread.set_device_info(dev_info)
-                self.camera_thread.set_resolution((w, h, pf_name))
-
-                # 1) When the grabber is open & streaming, enable the sliders, etc.
-                self.camera_thread.grabber_ready.connect(self._on_grabber_ready)
-
-                # 2) Each time a new frame is ready, update the QtCameraWidget
-                self.camera_thread.frame_ready.connect(
-                    self.camera_widget._on_frame_ready
-                )
-                self.camera_thread.frame_ready.connect(self._update_camera_info)
-
-                # 3) On any camera error, pop up a dialog and tear everything down
-                self.camera_thread.error.connect(self._on_camera_error)
-
-                self.camera_control_panel.setEnabled(False)
-            else:
-                if not isinstance(dev_info, DevCameraSource):
-                    QMessageBox.warning(
-                        self,
-                        "Camera",
-                        "The developer camera backend could not determine a source.",
-                    )
-                    return
-
-                self.camera_thread = DevCameraThread(parent=self)
-                self.camera_thread.set_device_info(dev_info)
-                self.camera_thread.set_resolution((w, h, pf_name))
-
-                self.camera_thread.frame_ready.connect(
-                    self.camera_widget._on_frame_ready
-                )
-                self.camera_thread.frame_ready.connect(self._update_camera_info)
-                self.camera_thread.error.connect(self._on_camera_error)
-
-                self.camera_control_panel.setEnabled(False)
+            try:
+                self.camera_thread = self.camera_registry.get_thread(dev_info, parent=self)
+            except Exception as exc:
+                self._on_camera_error(str(exc), "camera-open")
+                return
+            self.camera_thread.set_resolution((w, h, pf_name))
+            self.camera_thread.grabber_ready.connect(self._on_grabber_ready)
+            self.camera_thread.frame_ready.connect(self.camera_widget._on_frame_ready)
+            self.camera_thread.frame_ready.connect(self._update_camera_info)
+            self.camera_thread.error.connect(self._on_camera_error)
+            self.camera_thread.finished.connect(self._on_camera_finished)
+            self.camera_control_panel.set_controller(None)
+            self.camera_control_panel.setEnabled(False)
+            self.device_combo.setEnabled(False)
+            self.resolution_combo.setEnabled(False)
 
             # Show “Connecting…” in the Camera tab
             self.camera_info_panel.update_status("Connecting…", state="warning")
@@ -730,43 +589,39 @@ class MainWindow(QMainWindow):
                 self._request_recording_stop(
                     send_device_stop=True, reason="camera stopped"
                 )
+            self.camera_control_panel.set_controller(None)
             self.camera_thread.stop()
-            self.camera_thread = None
-            self._last_camera_frame_monotonic = None
-
-            # Reset UI
-            self.btn_start_camera.setText("Start Camera")
-            self.camera_control_panel.setEnabled(False)
-            try:
-                self.camera_control_panel.stop_auto_update()
-                self.camera_control_panel.grabber = None
-            except Exception:
-                pass
+            self.btn_start_camera.setEnabled(False)
+            self.btn_start_camera.setText("Stopping…")
+            return
+    @pyqtSlot()
+    def _on_camera_finished(self):
+        thread = self.sender()
+        if thread is not self.camera_thread:
+            return
+        self.camera_control_panel.set_controller(None)
+        self.camera_control_panel.setEnabled(False)
+        self.camera_thread = None
+        thread.deleteLater()
+        self._last_camera_frame_monotonic = None
+        self.btn_start_camera.setEnabled(True)
+        self.btn_start_camera.setText("Start Camera")
+        self.device_combo.setEnabled(True)
+        self.resolution_combo.setEnabled(True)
+        if self.camera_info_panel.status_text() != "Error":
             self.camera_info_panel.update_status("Disconnected")
-            self.camera_info_panel.reset_metrics()
             self.camera_info_panel.set_status_message("Camera idle.")
-            self.camera_widget.clear_image()
-            self.camera_info_panel.set_roi_available(
-                False, self.camera_widget.normalized_roi() is not None
-            )
-            self._refresh_recording_button_states()
+        self.camera_info_panel.reset_metrics()
+        self.camera_widget.clear_image()
+        self.camera_info_panel.set_roi_available(False, self.camera_widget.normalized_roi() is not None)
+        self._refresh_recording_button_states()
 
     @pyqtSlot()
     def _on_grabber_ready(self):
-        """
-        Called once SDKCameraThread has opened the grabber and started streaming.
-        We now hand the grabber over to CameraControlPanel to build its controls.
-        """
-        if self.camera_thread is None:
+        if (self.camera_thread is None or self.sender() is not self.camera_thread
+                or not self.camera_thread.isRunning()):
             return
-
-        grabber = self.camera_thread.grabber
-        if not grabber or not grabber.is_device_open:
-            log.error("MainWindow: grabber_ready() arrived, but grabber is not open.")
-            return
-
-        self.camera_control_panel.grabber = grabber
-        self.camera_control_panel._on_grabber_ready()
+        self.camera_control_panel.set_controller(self.camera_thread.controller)
         self.camera_control_panel.setEnabled(True)
 
         self.camera_info_panel.update_status("Connected", state="connected")
@@ -802,7 +657,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, str)
     def _on_camera_error(self, msg: str, code: str):
         """
-        Show any camera‐related IC4 errors in a dialog, then reset UI to “off” state.
+        Show camera errors in a dialog, then reset UI to “off” state.
         """
         log.error(f"Camera error occurred ({code}): {msg}")
         hint = "Please check the camera connection or restart the device."
@@ -817,6 +672,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+        self.camera_control_panel.set_controller(None)
         self.camera_control_panel.setEnabled(False)
         self.camera_info_panel.update_status("Error", state="error")
         self.camera_info_panel.reset_metrics()
@@ -2173,55 +2029,19 @@ class MainWindow(QMainWindow):
                     pass
                 self._serial_thread = None
 
-        # 3) Stop the camera thread (if it exists)
+        # A driver may take time to return. Never terminate a worker holding SDK resources.
+        self.camera_control_panel.set_controller(None)
         cam_thread = self.camera_thread
-        if cam_thread:
-            try:
-                if cam_thread.isRunning():
-                    log.info("Stopping SDKCameraThread...")
-                    cam_thread.stop()  # assume your SDKCameraThread has a stop() method
-                    if not cam_thread.wait(1500):
-                        log.warning(
-                            "SDKCameraThread did not stop gracefully; forcing terminate."
-                        )
-                        try:
-                            cam_thread.terminate()
-                        except Exception:
-                            pass
-                        cam_thread.wait(500)
-            except RuntimeError:
-                # The QThread object might already be deleted; ignore
-                pass
-            finally:
-                try:
-                    cam_thread.deleteLater()
-                except Exception:
-                    pass
-                self.camera_thread = None
-
-        # 4) Clear UI elements that might hold references
-        try:
-            self.device_combo.clear()
-        except Exception:
-            pass
-
-        # Explicitly release IC4-related objects before shutting down the library
-        try:
-            if hasattr(self, "camera_thread") and self.camera_thread:
-                if hasattr(self.camera_thread, "grabber"):
-                    del self.camera_thread.grabber
-                if hasattr(self.camera_thread, "_sink"):
-                    del self.camera_thread._sink
-                if hasattr(self.camera_thread, "_device_info"):
-                    del self.camera_thread._device_info
-        except Exception:
-            pass
-        try:
-            from imagingcontrol4.library import Library
-
-            Library.shutdown()
-        except Exception:
-            pass
+        if cam_thread and cam_thread.isRunning():
+            cam_thread.stop()
+            if not cam_thread.wait(2000):
+                log.warning("Waiting for camera cleanup before closing.")
+                self._closing = False
+                event.ignore()
+                QTimer.singleShot(500, self.close)
+                return
+        self.device_combo.clear()
+        self.camera_registry.close()
 
         # 5) Process any remaining events, then call the base implementation
         QApplication.processEvents()
