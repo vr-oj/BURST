@@ -273,10 +273,12 @@ class CameraControlPanel(QWidget):
                 slider.setEnabled(False)
                 continue
             step = prop.increment / factor or max((hi - lo) / 100, 0.001)
+            blockers = [QSignalBlocker(spin), QSignalBlocker(slider)]
+            if 0 < step < 1:
+                spin.setDecimals(min(6, max(spin.decimals(), math.ceil(-math.log10(step)))))
             # QSlider uses signed 32-bit integers even for cameras with huge ranges.
             scale = min(10 ** spin.decimals(), (2**30) / max(abs(lo), abs(hi), 1))
             setattr(self, scale_name, scale)
-            blockers = [QSignalBlocker(spin), QSignalBlocker(slider)]
             spin.setRange(lo, hi)
             spin.setSingleStep(step)
             spin.setValue(value)

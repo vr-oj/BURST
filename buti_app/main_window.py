@@ -441,7 +441,7 @@ class MainWindow(QMainWindow):
         combo.view().setMinimumWidth(popup_width)
 
     def _populate_device_list(self):
-        if self.camera_thread is not None and self.camera_thread.isRunning():
+        if self.camera_thread is not None:
             self.statusBar().showMessage("Stop the camera before refreshing devices.", 3000)
             return
         previous = self.device_combo.currentData()
@@ -542,7 +542,7 @@ class MainWindow(QMainWindow):
         """
         Called when the user clicks “Start Camera” or “Stop Camera”.
         """
-        if self.camera_thread is None or not self.camera_thread.isRunning():
+        if self.camera_thread is None:
             # ─── Start camera ─────────────────────────────────────────────────
             dev_info = self.device_combo.currentData()
             if dev_info is None:
@@ -594,20 +594,24 @@ class MainWindow(QMainWindow):
             self.btn_start_camera.setEnabled(False)
             self.btn_start_camera.setText("Stopping…")
             return
+
     @pyqtSlot()
     def _on_camera_finished(self):
         thread = self.sender()
         if thread is not self.camera_thread:
             return
+        if self._recording_state in {"preparing", "recording"}:
+            self._request_recording_stop(send_device_stop=True, reason="camera ended")
         self.camera_control_panel.set_controller(None)
         self.camera_control_panel.setEnabled(False)
         self.camera_thread = None
         thread.deleteLater()
         self._last_camera_frame_monotonic = None
-        self.btn_start_camera.setEnabled(True)
+        can_select = self._recording_state == "idle"
+        self.btn_start_camera.setEnabled(can_select)
         self.btn_start_camera.setText("Start Camera")
-        self.device_combo.setEnabled(True)
-        self.resolution_combo.setEnabled(True)
+        self.device_combo.setEnabled(can_select)
+        self.resolution_combo.setEnabled(can_select)
         if self.camera_info_panel.status_text() != "Error":
             self.camera_info_panel.update_status("Disconnected")
             self.camera_info_panel.set_status_message("Camera idle.")
@@ -660,11 +664,6 @@ class MainWindow(QMainWindow):
         Show camera errors in a dialog, then reset UI to “off” state.
         """
         log.error(f"Camera error occurred ({code}): {msg}")
-        hint = "Please check the camera connection or restart the device."
-        self._show_error_dialog(
-            "Camera Error", f"{msg}\n\n{hint}", details=f"Code: {code}"
-        )
-
         # If the thread is still running, stop it
         if self.camera_thread and self.camera_thread.isRunning():
             try:
@@ -686,6 +685,11 @@ class MainWindow(QMainWindow):
         if self._recording_state in {"preparing", "recording"}:
             self._request_recording_stop(send_device_stop=True, reason="camera error")
         self._refresh_recording_button_states()
+
+        hint = "Please check the camera connection or restart the device."
+        self._show_error_dialog(
+            "Camera Error", f"{msg}\n\n{hint}", details=f"Code: {code}"
+        )
 
     def _build_menus(self):
         mb = self.menuBar()
@@ -1887,8 +1891,9 @@ class MainWindow(QMainWindow):
         self._recording_state = "idle"
         self.recording_status_label.setText("Not Recording")
         self.camera_info_panel.set_transform_controls_enabled(True)
-        self.device_combo.setEnabled(True)
-        self.resolution_combo.setEnabled(True)
+        camera_active = self.camera_thread is not None
+        self.device_combo.setEnabled(not camera_active)
+        self.resolution_combo.setEnabled(not camera_active)
         self.btn_start_camera.setEnabled(True)
         self.camera_info_panel.set_roi_available(
             self.camera_thread is not None and self.camera_thread.isRunning(),
@@ -2041,10 +2046,11 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(500, self.close)
                 return
         self.device_combo.clear()
+        # Drain queued frame payloads before shutting down the native libraries.
+        QApplication.processEvents()
         self.camera_registry.close()
 
-        # 5) Process any remaining events, then call the base implementation
-        QApplication.processEvents()
+        # 5) Call the base implementation after all camera resources are released.
         log.info("All threads cleaned up. Proceeding with close.")
         super().closeEvent(event)
 

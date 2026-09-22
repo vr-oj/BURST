@@ -103,6 +103,51 @@ class CameraBackendTests(unittest.TestCase):
         adapter = IC4Controls(NS(device_property_map=props))
         self.assertEqual(adapter.read_controls()["exposure"].increment, 0)
 
+    def test_ic4_acquisition_defaults_and_cleanup_are_preserved(self):
+        from threads import sdk_camera_thread
+        values = {}
+        class Props:
+            def __iter__(self):
+                return iter(())
+            def node(self, name):
+                if name not in values:
+                    values[name] = NS(value=0, minimum=0, maximum=100000, increment=1,
+                                      entries=[NS(name="Continuous")])
+                return values[name]
+            find_float = find_integer = find_enumeration = node
+        grabber = Mock(device_property_map=Props())
+        sdk = Mock(Grabber=Mock(return_value=grabber))
+        with patch.object(sdk_camera_thread, "ic4", sdk), patch.dict(sys.modules, {"imagingcontrol4": sdk}):
+            thread = SDKCameraThread()
+            thread.set_device_info(NS(model_name="DMK", serial="123"))
+            thread.set_resolution((640, 480, "Mono8"))
+            grabber.stream_setup.side_effect = lambda *args, **kwargs: thread.stop()
+            thread.run()
+        self.assertEqual(values["ExposureTime"].value, 10000)
+        self.assertEqual(values["Gain"].value, 5)
+        self.assertEqual(values["ExposureAuto"].value, "Continuous")
+        self.assertEqual(values["GainAuto"].value, "Continuous")
+        self.assertEqual(values["TriggerMode"].value, "Off")
+        self.assertEqual(values["PixelFormat"].value, "Mono8")
+        self.assertEqual((values["Width"].value, values["Height"].value), (640, 480))
+        grabber.stream_stop.assert_called_once()
+        grabber.device_close.assert_called_once()
+        self.assertIsNone(thread.grabber)
+        self.assertIsNone(thread._device_info)
+
+    def test_opencv_configuration_failure_releases_capture(self):
+        from threads import micromanager_camera_thread as module
+        capture = Mock()
+        capture.set.side_effect = RuntimeError("disconnected")
+        thread = DevCameraThread()
+        errors = []
+        thread.error.connect(lambda *args: errors.append(args))
+        with patch.object(module, "cv2", Mock()), patch.object(module, "open_capture", return_value=capture):
+            thread.run()
+        self.assertEqual(len(errors), 1)
+        capture.release.assert_called_once()
+        self.assertIsNone(thread._capture)
+
 
 if __name__ == "__main__":
     unittest.main()

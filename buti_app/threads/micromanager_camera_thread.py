@@ -1,11 +1,7 @@
-﻿"""Developer-friendly camera thread used when IC4 is unavailable.
+"""Generic USB/UVC acquisition, retaining the historical Dev/MicroManager imports.
 
-Provides an OpenCV-based implementation so the rest of the UI can stay
-untouched while working on macOS or in a headless development environment.
-
-The goal is to mirror the public surface of ``SDKCameraThread`` closely enough so
-the rest of the UI can stay untouched while working on macOS or in a headless
-development environment.
+The registry discovers this backend alongside optional vendor SDKs. Capture handles
+stay in the worker; frames use the shared frame_ready(QImage, object) contract.
 """
 
 from __future__ import annotations
@@ -38,7 +34,7 @@ class DevCameraSource:
 
 
 class DevCameraThread(QThread):
-    """Drop-in replacement for :class:`SDKCameraThread` when IC4 is absent."""
+    """OpenCV acquisition thread with the shared camera signal/controller contract."""
 
     grabber_ready = pyqtSignal()
     frame_ready = pyqtSignal(QImage, object)

@@ -252,6 +252,7 @@ class SDKCameraThread(QThread):
                     log.warning("IC4 device close failed: %s", exc)
             self._sink = None
             self.grabber = None
+            self._device_info = None
 
     def frames_queued(self, sink):
         """
