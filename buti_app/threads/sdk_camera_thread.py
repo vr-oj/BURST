@@ -11,6 +11,7 @@ import numpy as np
 
 from utils.config import DEFAULT_FPS
 from cameras.controls import CameraController, IC4Controls
+from cameras.ic4_backend import reset_offsets
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QImage
@@ -128,6 +129,7 @@ class SDKCameraThread(QThread):
                     if pf_node:
                         pf_node.value = pf_name
                         log.info(f"SDKCameraThread: Set PixelFormat = {pf_name}")
+                        reset_offsets(self.grabber.device_property_map)
                         w_node = self.grabber.device_property_map.find_integer("Width")
                         h_node = self.grabber.device_property_map.find_integer("Height")
                         if w_node and h_node:

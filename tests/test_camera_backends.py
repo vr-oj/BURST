@@ -94,14 +94,70 @@ class CameraBackendTests(unittest.TestCase):
         class FloatNode:
             value, minimum, maximum = 1000, 100, 100000
             is_locked, is_readonly = False, False
+            increment_mode = NS(name="NONE")
+            increment_reads = 0
             @property
             def increment(self):
+                self.increment_reads += 1
                 raise RuntimeError("continuous property")
         props = Mock()
         props.find_float.return_value = FloatNode()
         props.find_enumeration.side_effect = RuntimeError("missing")
         adapter = IC4Controls(NS(device_property_map=props))
         self.assertEqual(adapter.read_controls()["exposure"].increment, 0)
+        adapter.read_controls()
+        self.assertEqual(props.find_float.return_value.increment_reads, 0)
+
+    def test_ic4_discrete_increment_is_preserved(self):
+        node = NS(value=10, minimum=0, maximum=100, increment=0.25,
+                  increment_mode=NS(name="INCREMENT"))
+        props = Mock()
+        props.find_float.return_value = node
+        props.find_enumeration.side_effect = RuntimeError("missing")
+        self.assertEqual(IC4Controls(NS(device_property_map=props)).read_controls()["gain"].increment, 0.25)
+
+    def test_ic4_lists_maximum_when_current_mode_is_640_and_restores_geometry(self):
+        nodes = {"OffsetX": NS(value=144, minimum=0), "OffsetY": NS(value=64, minimum=0)}
+        class Dimension:
+            minimum = 1
+            def __init__(self, value, maximum, offset):
+                self.value, self.sensor_max, self.offset = value, maximum, offset
+            @property
+            def maximum(self):
+                return self.sensor_max - nodes[self.offset].value
+        nodes.update(Width=Dimension(640, 2448, "OffsetX"), Height=Dimension(480, 2048, "OffsetY"))
+        class PixelFormat:
+            entries = [NS(name="Mono8"), NS(name="Mono16"), NS(name="Unavailable")]
+            _value = "Mono16"
+            @property
+            def value(self):
+                return self._value
+            @value.setter
+            def value(self, value):
+                if value == "Unavailable":
+                    raise RuntimeError("unsupported")
+                self._value = value
+                # Exercise restoration even if switching pixel format changes geometry.
+                nodes["Width"].value = 640
+                nodes["Height"].value = 480
+        pf = PixelFormat()
+        def enumeration(name):
+            if name == "PixelFormat":
+                return pf
+            raise RuntimeError("missing")
+        props = NS(find_integer=lambda name: nodes[name], find_enumeration=enumeration)
+        grabber = Mock(device_property_map=props)
+        backend = IC4Backend(NS(Grabber=lambda: grabber))
+        modes = backend.list_modes(CameraDeviceInfo("ic4", "camera", "DMK", native_info="native"))
+        self.assertEqual(modes[0].as_tuple(), (2448, 2048, "Mono8"))
+        self.assertEqual({m.as_tuple() for m in modes}, {
+            (2448, 2048, "Mono8"), (2448, 2048, "Mono16"),
+            (640, 480, "Mono8"), (640, 480, "Mono16"),
+        })
+        self.assertEqual(pf.value, "Mono16")
+        self.assertEqual({name: node.value for name, node in nodes.items()},
+                         {"OffsetX": 144, "OffsetY": 64, "Width": 640, "Height": 480})
+        grabber.device_close.assert_called_once()
 
     def test_ic4_acquisition_defaults_and_cleanup_are_preserved(self):
         from threads import sdk_camera_thread

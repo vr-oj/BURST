@@ -104,7 +104,10 @@ class IC4Controls:
             try:
                 node = props.find_float(name)
                 try:
-                    step = node.increment
+                    # Reading increment for continuous properties logs native SDK
+                    # errors even if Python catches the resulting exception.
+                    mode = getattr(node, "increment_mode", None)
+                    step = node.increment if getattr(mode, "name", None) == "INCREMENT" else 0
                 except Exception:
                     step = 0
                 result[key] = CameraControl(float(node.value), float(node.minimum),
