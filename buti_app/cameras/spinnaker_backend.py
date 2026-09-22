@@ -1,6 +1,6 @@
 """Spinnaker handles live only inside a discovery/mode/acquisition session."""
 import logging
-from .models import CameraDeviceInfo, CameraMode
+from .models import CameraDeviceInfo, CameraMode, physical_identity
 from .controls import CameraControl, FLOAT_NODES, ENUM_NODES
 
 log = logging.getLogger(__name__)
@@ -200,7 +200,7 @@ class SpinnakerBackend:
                     continue
                 devices.append(CameraDeviceInfo(self.key, identifier,
                     f"{info['model'] or 'FLIR Camera'} (S/N: {info['serial'] or 'unknown'}) — FLIR / Spinnaker",
-                    info["serial"] or None, identifier, info["vendor"]))
+                    info["serial"] or None, identifier, info["vendor"], physical_identity(info["vendor"], info["serial"])))
         return devices
 
     def list_modes(self, device):

@@ -1,6 +1,18 @@
 from dataclasses import dataclass
 
 
+def physical_identity(vendor: str, serial: str | None) -> str | None:
+    """Conservative vendor + serial key shared by native SDKs and GenTL."""
+    if not vendor or not serial or serial.lower() in {"unknown", "none", "0"}:
+        return None
+    vendor = vendor.casefold().strip()
+    if "flir" in vendor or "point grey" in vendor:
+        vendor = "flir"
+    elif "imaging source" in vendor:
+        vendor = "tis"
+    return f"{vendor}:{serial.casefold().strip()}"
+
+
 @dataclass(frozen=True)
 class CameraDeviceInfo:
     backend: str

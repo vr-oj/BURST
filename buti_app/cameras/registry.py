@@ -1,17 +1,21 @@
 import importlib
+from importlib.metadata import entry_points
 import logging
 from .ic4_backend import IC4Backend
 from .opencv_backend import OpenCVBackend
 from .spinnaker_backend import SpinnakerBackend
+from .gentl_backend import GenTLBackend
+from .runtime import configure_dll_paths
 
 log = logging.getLogger(__name__)
 
 
 class CameraRegistry:
-    """Extend backend_types to register another transport (for example GenTL)."""
-    backend_types = (IC4Backend, SpinnakerBackend, OpenCVBackend)
+    """Built-in and installed camera adapters share the same UI contract."""
+    backend_types = (IC4Backend, SpinnakerBackend, GenTLBackend, OpenCVBackend)
 
-    def __init__(self, backend_filter="auto", importer=importlib.import_module):
+    def __init__(self, backend_filter="auto", importer=importlib.import_module, plugin_entries=None):
+        configure_dll_paths()
         self.backends = {}
         self.unavailable = {}
         selected = {s.strip() for s in backend_filter.lower().split(",")}
@@ -26,11 +30,31 @@ class CameraRegistry:
             except Exception as exc:
                 self.unavailable[key] = str(exc)
                 log.info("Camera backend %s: unavailable (%s)", key, exc)
+        # SDK adapter packages opt in by registering this entry-point group.
+        # They run with application privileges, like any installed Python package.
+        try:
+            entries = entry_points(group="burst.camera_backends") if plugin_entries is None else plugin_entries
+            for entry in entries:
+                if not selected.intersection({"", "auto", "all", entry.name}):
+                    continue
+                try:
+                    if entry.name in self.backends or entry.name in {b.key for b in self.backend_types}:
+                        raise ValueError("adapter key conflicts with a built-in backend")
+                    backend = entry.load()()
+                    if backend.key != entry.name:
+                        raise ValueError("adapter key must match its entry-point name")
+                    self.backends[entry.name] = backend
+                    log.info("Camera backend %s: available (installed adapter)", entry.name)
+                except Exception as exc:
+                    log.warning("Camera adapter %s unavailable: %s", entry.name, exc)
+        except Exception as exc:
+            log.warning("Installed camera adapter discovery failed: %s", exc)
 
     def discover_cameras(self):
         devices = []
         identities = set()
-        for key, backend in self.backends.items():
+        ordered = sorted(self.backends.items(), key=lambda item: {"gentl": 1, "opencv": 2}.get(item[0], 0))
+        for key, backend in ordered:
             try:
                 for device in backend.discover():
                     if device.physical_id and device.physical_id in identities:

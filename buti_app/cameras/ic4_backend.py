@@ -1,5 +1,5 @@
 import logging
-from .models import CameraDeviceInfo, CameraMode
+from .models import CameraDeviceInfo, CameraMode, physical_identity
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class IC4Backend:
         return [CameraDeviceInfo(
             self.key, str(getattr(dev, "unique_name", None) or dev.serial or dev.model_name),
             f"{dev.model_name} (S/N: {dev.serial}) — The Imaging Source / IC4",
-            str(dev.serial) or None, dev, "The Imaging Source",
+            str(dev.serial) or None, dev, "The Imaging Source", physical_identity("The Imaging Source", dev.serial),
         ) for dev in self.sdk.DeviceEnum.devices()]
 
     def list_modes(self, device):
