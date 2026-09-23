@@ -82,6 +82,13 @@ def rename_recording_pair(
     """Rename a synchronized pair without overwriting or leaving a half-renamed pair."""
 
     csv_source = Path(csv_path)
+    if not tiff_path:
+        csv_target = Path(recording_pair_paths(str(csv_source.parent), base_name)[0])
+        if csv_target != csv_source:
+            if csv_target.exists():
+                raise FileExistsError(f"{csv_target.name} already exists.")
+            csv_source.rename(csv_target)
+        return str(csv_target), ""
     tiff_source = Path(tiff_path)
     if csv_source.parent != tiff_source.parent:
         raise ValueError("The CSV and TIFF must be in the same folder.")

@@ -38,23 +38,24 @@ except ImportError:
 
 @unittest.skipIf(QApplication is None, "PyQt5 UI dependencies are unavailable")
 class MainCardUiTests(unittest.TestCase):
-    def test_recording_rate_requires_box_confirmation_and_idle_state(self):
-        from PyQt5.QtWidgets import QMessageBox
-        window = SimpleNamespace(
-            _recording_state="idle", _device_run_active=False,
-            _recording_target_fps=10, _update_camera_rate_status=Mock())
-        with patch("main_window.QMessageBox.question", return_value=QMessageBox.Cancel):
-            MainWindow._confirm_recording_rate(window, 5)
-        self.assertEqual(window._recording_target_fps, 10)
-        with patch("main_window.QMessageBox.question", return_value=QMessageBox.Yes):
-            MainWindow._confirm_recording_rate(window, 5)
-        self.assertEqual(window._recording_target_fps, 5)
-        window._update_camera_rate_status.assert_called_once()
-        window._device_run_active = True
-        with patch("main_window.QMessageBox.question") as question:
-            MainWindow._confirm_recording_rate(window, 10)
-        question.assert_not_called()
-        self.assertEqual(window._recording_target_fps, 5)
+    def test_unsupported_box_commands_are_not_sent(self):
+        serial = Mock()
+        serial.isRunning.return_value = True
+        serial.send_command.return_value = True
+        window = SimpleNamespace(_serial_thread=serial)
+        for command in ("H", "R", "Z"):
+            self.assertFalse(MainWindow._send_serial_command(window, command))
+        serial.send_command.assert_not_called()
+        self.assertTrue(MainWindow._send_serial_command(window, "G"))
+        serial.send_command.assert_called_once_with("G")
+
+    def test_box_controls_expose_settings_but_disable_home_and_step(self):
+        panel = TopControlPanel()
+        panel.update_connection_status("Connected", True)
+        self.assertFalse(panel.zero_btn.isEnabled())
+        self.assertFalse(panel.step_btn.isEnabled())
+        self.assertIn("settings", panel.reset_btn.text())
+        self.assertTrue(panel.reset_btn.isEnabled())
 
     @classmethod
     def setUpClass(cls):

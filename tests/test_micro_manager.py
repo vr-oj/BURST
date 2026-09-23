@@ -170,10 +170,11 @@ class MicroManagerTests(unittest.TestCase):
         thread.run()
         self.assertEqual(errors, [])
         self.assertEqual(len(frames), 1)
-        image, array = frames[0]
+        image, payload = frames[0]
+        array = payload.pixels
         self.assertEqual(image.pixelColor(0, 0).red(), 128)
         self.core.popNextImage.return_value[:] = 0
-        self.assertEqual(int(array[0, 0]), 128)
+        self.assertEqual(int(array[0, 0]), 2048)
         array[:] = 0
         self.assertEqual(image.pixelColor(0, 0).red(), 128)
         self.core.stopSequenceAcquisition.assert_called_once()
@@ -181,6 +182,28 @@ class MicroManagerTests(unittest.TestCase):
         self.core.startSequenceAcquisition.assert_not_called()
         self.core.unloadAllDevices.assert_called_once()
         self.assertEqual(thread.controller.capabilities(), {})
+
+    def test_external_trigger_arms_and_waits_without_preview_frames(self):
+        self.core.setProperty("Camera", "TriggerMode", "Off")
+        self.core.setProperty("Camera", "TriggerSelector", "FrameStart")
+        self.core.setProperty("Camera", "TriggerSource", "Line0")
+        self.core.setProperty("Camera", "TriggerActivation", "RisingEdge")
+        self.core.getAllowedPropertyValues.return_value = ()
+        self.core.getAllowedPropertyValues.side_effect = None
+        self.core.getRemainingImageCount.return_value = 0
+        self.core.isSequenceRunning.return_value = True
+        thread = self.thread()
+        thread.hardware_trigger_source = "Line0"
+        errors, ready = [], []
+        thread.error.connect(lambda *args: errors.append(args))
+        thread.grabber_ready.connect(lambda: ready.append(True))
+        with patch.object(thread, "msleep", side_effect=lambda ms: thread.stop()):
+            thread.run()
+        self.assertEqual(errors, [])
+        self.assertEqual(ready, [True])
+        self.assertEqual(thread.trigger_configuration["TriggerMode"], "On")
+        self.assertEqual(self.core.getProperty("Camera", "TriggerSource"), "Line0")
+        self.core.stopSequenceAcquisition.assert_called_once()
 
     def test_overflow_and_stopped_sequence_are_errors_with_cleanup(self):
         for overflow in (True, False):

@@ -40,6 +40,8 @@ def run_recording_preflight(
     minimum_free_gb: float,
     maximum_camera_frame_age_s: float = 3.0,
     camera_rate_check: PreflightCheck | None = None,
+    camera_required: bool = True,
+    hardware_armed: bool = False,
 ) -> PreflightReport:
     """Check recording prerequisites without involving UI code."""
 
@@ -76,7 +78,12 @@ def run_recording_preflight(
         ),
     ]
 
-    if camera_rate_check is not None:
+    if not camera_required:
+        checks = [check for check in checks if check.label not in {"Camera", "Camera frames"}]
+    elif hardware_armed:
+        checks = [check for check in checks if check.label != "Camera frames"]
+        checks.append(PreflightCheck("External trigger", True, "Camera configured and armed; waiting for pulses"))
+    if camera_rate_check is not None and camera_required:
         checks.append(camera_rate_check)
 
     root = Path(results_root)

@@ -17,6 +17,10 @@ class RecordingSummary:
     first_frame_index: int | None = None
     last_frame_index: int | None = None
     issues: list[str] = field(default_factory=list)
+    images_requested: int | None = None
+    capture_mode: str = "every_sample_legacy"
+    observed_box: dict = field(default_factory=dict)
+    timing_mode: str = "software"
 
     @property
     def checks_passed(self) -> bool:

@@ -144,7 +144,8 @@ class SpinnakerTests(unittest.TestCase):
         thread.run()
         self.assertEqual(errors, [])
         self.assertEqual(len(frames), 1)
-        qimage, array = frames[0]
+        qimage, payload = frames[0]
+        array = payload.pixels
         self.assertEqual(array[0].tolist(), [10, 20, 30, 40])
         self.assertEqual(qimage.pixelColor(0, 0).red(), 10)
         array[:] = 99

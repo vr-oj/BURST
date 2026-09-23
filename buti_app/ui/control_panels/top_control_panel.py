@@ -138,7 +138,7 @@ class TopControlPanel(QWidget):
         self.zero_btn.clicked.connect(self.zero_requested.emit)
         command_grid.addWidget(self.zero_btn, 1, 0)
 
-        self.reset_btn = QPushButton("Reset")
+        self.reset_btn = QPushButton("Box settings…")
         self.reset_btn.setEnabled(False)
         self.reset_btn.setProperty("cssClass", "ghost")
         self.reset_btn.clicked.connect(self.reset_requested.emit)
@@ -347,8 +347,11 @@ class TopControlPanel(QWidget):
         self._set_status_badge(text, connected)
 
         self.set_run_state(False, connected=connected)
-        for btn in (self.reset_btn, self.zero_btn, self.step_btn):
-            btn.setEnabled(connected)
+        self.reset_btn.setEnabled(True)
+        self.zero_btn.setEnabled(False)
+        self.zero_btn.setToolTip("Use Home on the Arduino box. Published BUTI firmware has no remote Home command.")
+        self.step_btn.setEnabled(False)
+        self.step_btn.setToolTip("Remote Step is unavailable until the Arduino Step timing/counter issues are corrected.")
 
     def set_run_state(self, running: bool, *, connected: bool = True) -> None:
         self.start_btn.setEnabled(bool(connected and not running))

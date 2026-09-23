@@ -8,6 +8,8 @@ except Exception:  # Optional SDK may be installed with missing runtime DLLs
     ic4 = None
 
 import numpy as np
+from cameras.frame_data import FrameData
+from cameras.trigger import configure_external_trigger, verify_external_trigger
 
 from utils.config import DEFAULT_FPS
 from cameras.controls import CameraController, IC4Controls
@@ -195,13 +197,22 @@ class SDKCameraThread(QThread):
                 log.warning(f"SDKCameraThread: Could not disable TriggerMode: {e}")
 
             # ─── Signal “grabber_ready” so UI can enable controls ────────────────
+            source = getattr(self, "hardware_trigger_source", "")
+            if source:
+                try:
+                    props.find_boolean("AcquisitionFrameRateEnable").value = False
+                except Exception:
+                    log.info("IC4 frame-rate enable switch unavailable; monitoring requested images.")
+                self.trigger_configuration = configure_external_trigger(
+                    lambda n: props.find_enumeration(n).value,
+                    lambda n, v: setattr(props.find_enumeration(n), "value", v), source)
             adapter = IC4Controls(self.grabber)
             self.controller.open(adapter)
 
             # ─── Build QueueSink requesting Mono8 (fallback to native PF if needed)─
             try:
                 self._sink = ic4.QueueSink(
-                    self, [ic4.PixelFormat.Mono8], max_output_buffers=1
+                    self, [ic4.PixelFormat.Mono16 if self._resolution and self._resolution[2] == "Mono16" else ic4.PixelFormat.Mono8], max_output_buffers=4
                 )
             except:
                 native_pf = self._resolution[2] if self._resolution else None
@@ -228,6 +239,8 @@ class SDKCameraThread(QThread):
             )
 
             # ─── Frame loop: IC4 calls frames_queued() whenever a new buffer is ready ─
+            if source:
+                verify_external_trigger(lambda n: props.find_enumeration(n).value, self.trigger_configuration)
             self.controller.service(adapter)
             self.grabber_ready.emit()
             while not self._stop_requested:
@@ -279,7 +292,7 @@ class SDKCameraThread(QThread):
             qimg = QImage(gray8.data, w, h, gray8.strides[0], QImage.Format_Grayscale8)
 
             # Emit to the UI
-            self.frame_ready.emit(qimg.copy(), buf)
+            self.frame_ready.emit(qimg.copy(), FrameData.copy(arr, pixel_format=str(arr.dtype), native_depth_preserved=not self._resolution or self._resolution[2] in {"Mono8", "Mono16"}))
 
         except Exception as e:
             log.error(

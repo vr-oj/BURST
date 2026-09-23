@@ -5,6 +5,7 @@ import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QImage
 from cameras.controls import CameraController
+from cameras.frame_data import FrameData
 from cameras.micro_manager_process import MicroManagerClient, RemoteMicroManagerControls, MicroManagerCancelled
 
 log = logging.getLogger(__name__)
@@ -51,7 +52,9 @@ class MMCoreCameraThread(QThread):
         try:
             log.info("Starting isolated Micro-Manager camera: %s", self.profile)
             with self.client_factory(cancelled=lambda: self._stop_requested) as client:
-                snapshot = client.request("open", self.profile)
+                source = getattr(self, "hardware_trigger_source", "")
+                snapshot = client.request("open", self.profile, source)
+                self.trigger_configuration = snapshot.get("trigger_configuration", {})
                 adapter = RemoteMicroManagerControls(client, snapshot)
                 try:
                     if self._stop_requested:
@@ -66,9 +69,10 @@ class MMCoreCameraThread(QThread):
                             frame, components, bit_depth = payload
                             image, array = copy_mm_frame(frame, components, bit_depth)
                             last_frame = time.monotonic()
-                            self.frame_ready.emit(image, array)
+                            self.frame_ready.emit(image, FrameData.copy(frame if components == 1 else array,
+                                pixel_format=f"Mono{bit_depth}" if components == 1 else "RGB8"))
                         else:
-                            if time.monotonic() - last_frame > 5:
+                            if not source and time.monotonic() - last_frame > 5:
                                 raise RuntimeError("No images for five seconds. Check exposure, connection and configured trigger source. Use internal/free-running triggering for preview.")
                             self.msleep(5)
                 finally:

@@ -1,4 +1,4 @@
-﻿# File: buti_app/utils/config.py
+# File: buti_app/utils/config.py
 
 """Central configuration for the BURST application."""
 
@@ -103,19 +103,13 @@ SERIAL_PORT_WRITE_TIMEOUT_S = _float_from_env("BURST_SERIAL_WRITE_TIMEOUT", None
 if SERIAL_PORT_WRITE_TIMEOUT_S is None:
     SERIAL_PORT_WRITE_TIMEOUT_S = _float_from_env("BUTI_SERIAL_WRITE_TIMEOUT", None)
 
-# Single-character commands supported by the BURST firmware
+# Published BUTI firmware commands exposed by BURST; settings RPC is unavailable.
 SERIAL_CMD_START = "G"
 SERIAL_CMD_STOP = "S"
-SERIAL_CMD_HOME = "H"
-SERIAL_CMD_RESET = "R"
-SERIAL_CMD_STEP = "Z"
 
 SERIAL_COMMANDS = {
     "start": SERIAL_CMD_START,
     "stop": SERIAL_CMD_STOP,
-    "home": SERIAL_CMD_HOME,
-    "reset": SERIAL_CMD_RESET,
-    "step": SERIAL_CMD_STEP,
 }
 
 APP_NAME = "BURST"
@@ -123,7 +117,7 @@ RELEASES_URL = "https://github.com/vr-oj/BURST/releases/latest"
 ABOUT_TEXT = f"""
 <strong>{APP_NAME} v{APP_VERSION}</strong>
 <p>BURST stands for BUTI Uniaxial Recording of Strain &amp; Tension.</p>
-<p>This application displays a live camera feed and force data from the BUTI Arduino Box, live plots force vs. time, and records the synchronized data into a high-resolution TIFF stack (with embedded metadata) and a synchronized CSV log.</p>
+<p>This application displays a live camera feed and force data from the BUTI Arduino Box, live plots force vs. time, and records a TIFF image stack and a CSV of force samples with association metadata. Exposure timing synchronization is not verified.</p>
 <p>Experiment control (start/stop) can be triggered directly from this application.</p>
 """
 

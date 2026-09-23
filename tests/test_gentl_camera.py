@@ -75,7 +75,7 @@ class GenTLTests(unittest.TestCase):
         thread.error.connect(lambda *args: errors.append(args))
         thread.run()
         self.assertEqual(errors, [])
-        self.assertEqual(frames[0][1].tolist(), [[1, 2], [3, 4]])
+        self.assertEqual(frames[0][1].pixels.tolist(), [[1, 2], [3, 4]])
         self.assertEqual(events, ["start", "queue", "stop", "destroy", "reset"])
 
     def test_acquisition_failure_still_destroys_device(self):

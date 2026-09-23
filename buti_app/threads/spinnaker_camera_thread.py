@@ -5,6 +5,8 @@ import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QImage
 from cameras.controls import CameraController
+from cameras.frame_data import FrameData
+from cameras.trigger import configure_external_trigger, verify_external_trigger
 from cameras.spinnaker_backend import SpinnakerSession, SpinnakerControls
 from utils.config import DEFAULT_FPS
 
@@ -61,11 +63,24 @@ class SpinnakerCameraThread(QThread):
                 session.open(self._device_info)
                 adapter = SpinnakerControls(session)
                 adapter.configure(self._resolution, DEFAULT_FPS)
+                source = getattr(self, "hardware_trigger_source", "")
+                if source:
+                    try:
+                        enable = adapter.node("AcquisitionFrameRateEnable", "Boolean")
+                        if sdk.IsWritable(enable):
+                            enable.SetValue(False)
+                    except Exception:
+                        log.info("Camera has no writable frame-rate enable switch; trigger delivery will be checked during recording.")
+                    self.trigger_configuration = configure_external_trigger(
+                        lambda n: adapter.node(n, "Enumeration").GetCurrentEntry().GetSymbolic(),
+                        adapter.set_enum, source)
                 processor = sdk.ImageProcessor()
                 processor.SetColorProcessing(sdk.SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR)
                 try:
                     session.camera.BeginAcquisition()
                     session.acquiring = True
+                    if source:
+                        verify_external_trigger(lambda n: adapter.node(n, "Enumeration").GetCurrentEntry().GetSymbolic(), self.trigger_configuration)
                     self.controller.open(adapter)
                     self.grabber_ready.emit()
                     last_frame = time.monotonic()
@@ -77,20 +92,33 @@ class SpinnakerCameraThread(QThread):
                             code = getattr(exc, "errorcode", None)
                             if self._stop_requested:
                                 break
-                            if code == getattr(sdk, "SPINNAKER_ERR_TIMEOUT", -1011) and time.monotonic() - last_frame < 5:
+                            if code == getattr(sdk, "SPINNAKER_ERR_TIMEOUT", -1011) and (source or time.monotonic() - last_frame < 5):
                                 continue
                             raise
                         try:
                             if image.IsIncomplete():
+                                if source:
+                                    raise RuntimeError("Incomplete triggered image; event correspondence cannot be guaranteed.")
                                 if time.monotonic() - last_frame > 5:
                                     raise RuntimeError("Camera is delivering incomplete images; check the connection/bandwidth.")
                                 continue
                             qimage, array = copy_spinnaker_frame(sdk, image, processor)
+                            name = image.GetPixelFormatName()
+                            if name.startswith("Mono") and name not in ("Mono8", "Mono16"):
+                                native = processor.Convert(image, sdk.PixelFormat_Mono16)
+                                try:
+                                    payload = FrameData.copy(native.GetNDArray(), pixel_format=name + " converted to Mono16")
+                                finally:
+                                    native.Release()
+                            elif name in ("Mono8", "Mono16"):
+                                payload = FrameData.copy(image.GetNDArray(), pixel_format=name)
+                            else:
+                                payload = FrameData.copy(array, pixel_format="RGB8 converted preview", native_depth_preserved=False)
                         finally:
                             image.Release()
                             del image
                         last_frame = time.monotonic()
-                        self.frame_ready.emit(qimage, array)
+                        self.frame_ready.emit(qimage, payload)
                 finally:
                     self.controller.close()
                     del processor

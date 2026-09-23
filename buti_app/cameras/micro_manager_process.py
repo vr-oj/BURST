@@ -162,10 +162,34 @@ class MicroManagerService:
                     self.adapter.set_value("mm:AcquisitionFrameRate", "10")
                 except Exception as exc:
                     log.warning("Could not request 10 FPS: %s", exc)
+            source = args[1] if len(args) > 1 else ""
+            self.trigger_configuration = {}
+            if source:
+                from .trigger import configure_external_trigger, verify_external_trigger
+                core, camera = self.session.core, self.session.camera
+                self.trigger_configuration = configure_external_trigger(
+                    lambda n: core.getProperty(camera, n),
+                    lambda n, v: core.setProperty(camera, n, v), source)
+                for name in ("Frame Rate Control Enabled", "AcquisitionFrameRateEnable"):
+                    try:
+                        if core.hasProperty(camera, name) and not core.isPropertyReadOnly(camera, name):
+                            core.setProperty(camera, name, "0")
+                    except Exception:
+                        log.info("Adapter frame-rate switch %s could not be disabled.", name)
+            elif "mm:TriggerMode" in self.adapter.read_controls():
+                # Do not leave a previous externally triggered session armed in software mode.
+                control = self.adapter.read_controls()["mm:TriggerMode"]
+                if "Off" in control.choices or str(control.value) in {"On", "Off"}:
+                    self.adapter.set_value("mm:TriggerMode", "Off")
+                elif "Internal" in control.choices:
+                    self.adapter.set_value("mm:TriggerMode", "Internal")
             self.session.start()
+            if source:
+                verify_external_trigger(lambda n: core.getProperty(camera, n), self.trigger_configuration)
             return self.dispatch("snapshot", ())
         if method == "snapshot":
-            return {"controls": self.adapter.read_controls(), "diagnostics": self.adapter.read_diagnostics()}
+            return {"controls": self.adapter.read_controls(), "diagnostics": self.adapter.read_diagnostics(),
+                    "trigger_configuration": getattr(self, "trigger_configuration", {})}
         if method == "set":
             self.adapter.set_value(*args)
             return None

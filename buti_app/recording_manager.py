@@ -14,6 +14,9 @@ from PyQt5.QtGui import QImage
 from utils.config import MIN_FREE_SPACE_GB
 from utils.buti_metadata import BUTI_CSV_COLUMNS, BUTI_SETTINGS_TO_CSV
 from utils.frame_transform import transform_qimage
+from utils.roi import normalized_roi_to_bounds
+from utils.buti_protocol import BoxObservation
+from cameras.frame_data import FrameData
 from utils.recording_recovery import (
     complete_manifest,
     create_partial_manifest,
@@ -27,7 +30,7 @@ log = logging.getLogger(__name__)
 
 
 class RecordingManager(QObject):
-    """Manage synchronized writing of force data and transformed camera frames."""
+    """Write force rows and explicitly associated images; no exposure-time guarantee."""
 
     ready_for_acquisition = pyqtSignal()
     finalized = pyqtSignal(str, str, object)
@@ -52,6 +55,14 @@ class RecordingManager(QObject):
         self.mirror_horizontal = bool(mirror_horizontal)
         self.mirror_vertical = bool(mirror_vertical)
         self.acquisition_metadata = dict(acquisition_metadata or {})
+        self.capture_mode = self.acquisition_metadata.get("capture_mode", "every_sample_legacy")
+        if self.capture_mode not in {"box", "force_only", "every_sample_legacy"}:
+            raise ValueError("Unknown recording capture mode")
+        self._external_trigger = self.acquisition_metadata.get("timing_mode") == "external_trigger" and self.capture_mode == "box"
+        self._pending_frames = deque()
+        self._recording_started_monotonic = 0
+        self._box_observation = BoxObservation()
+        self._images_requested = 0
         raw_buti_settings = self.acquisition_metadata.get("buti_settings", {})
         self.buti_settings = (
             dict(raw_buti_settings) if isinstance(raw_buti_settings, dict) else {}
@@ -94,7 +105,7 @@ class RecordingManager(QObject):
         self._finalize_timer.setInterval(2000)
         self._finalize_timer.timeout.connect(self._force_finalize)
         self._recovery_flush_timer = QTimer(self)
-        self._recovery_flush_timer.setInterval(1000)
+        self._recovery_flush_timer.setInterval(250)
         self._recovery_flush_timer.timeout.connect(self._flush_recovery_outputs)
 
     @pyqtSlot()
@@ -143,6 +154,10 @@ class RecordingManager(QObject):
         self._frames_written = 0
         self._samples_written = 0
         self._pending_samples.clear()
+        self._images_requested = 0
+        self._box_observation.reset()
+        self._pending_frames.clear()
+        self._recording_started_monotonic = time.monotonic()
 
         try:
             self._partial_manifest_path = create_partial_manifest(
@@ -175,10 +190,12 @@ class RecordingManager(QObject):
             self.csv_file = open(self._csv_path, "w", newline="")
             self.csv_writer = csv.writer(self.csv_file)
             columns = ["time_s", "frame_index", "distance", "cycle", "force"]
+            if self.capture_mode != "every_sample_legacy":
+                columns.extend(["sample_index", "image_requested"])
             if self.buti_settings:
                 columns.extend(BUTI_CSV_COLUMNS)
             self.csv_writer.writerow(columns)
-            self.tif_writer = tifffile.TiffWriter(self._tiff_path, bigtiff=True)
+            # TIFF is opened only for the first image; None/force-only produces CSV alone.
         except Exception as exc:
             log.exception("Failed to open recording output")
             self.error_occurred.emit(f"Failed to open recording files: {exc}")
@@ -194,6 +211,14 @@ class RecordingManager(QObject):
     def _flush_recovery_outputs(self):
         """Periodically push buffered recording data out for crash recovery."""
 
+        if self._external_trigger and self.is_recording:
+            now = time.monotonic()
+            if self._pending_frames and now - self._pending_frames[0][2] > 1:
+                self._trigger_queue_failed("Triggered image arrived without a matching serial event for over one second")
+                return
+            if self._pending_samples and now - self._pending_samples[0][6] > 1:
+                self._trigger_queue_failed("Arduino requested an image but none arrived within one second; check trigger wiring, exposure and input")
+                return
         try:
             if self.csv_file:
                 self.csv_file.flush()
@@ -216,50 +241,89 @@ class RecordingManager(QObject):
         if not self._got_first_sample and not self._open_outputs():
             return
         try:
+            if self.capture_mode == "every_sample_legacy":
+                requested = True
+                if self._last_frame_index is not None and int(frame_idx) != self._last_frame_index + 1:
+                    self._frame_index_issues.append(f"Device frame index changed from {self._last_frame_index} to {int(frame_idx)}.")
+            else:
+                try:
+                    if self._external_trigger and self._box_observation.last_counter is None:
+                        if int(frame_idx) not in (0, 1):
+                            raise ValueError("Hardware-trigger recording requires ZERO on the box before starting; the initial counter was not 0 or 1")
+                        self._box_observation.last_counter = 0
+                    triggered, missing = self._box_observation.observe(time_s, int(frame_idx))
+                except ValueError as exc:
+                    self._frame_index_issues.append(str(exc))
+                    self.synchronization_lost.emit(str(exc))
+                    self.stop_recording()
+                    return
+                requested = triggered and self.capture_mode == "box"
+                if missing and self._external_trigger:
+                    raise ValueError("Device trigger counter skipped during hardware-trigger recording; correspondence is unknown")
+                if missing:
+                    self._frame_index_issues.append(f"Device trigger counter skipped {missing} trigger(s); their force samples are unavailable.")
             row = [time_s, frame_idx, distance, cycle, force]
+            if self.capture_mode != "every_sample_legacy":
+                row.extend([self._samples_written + 1, int(requested)])
             if self.buti_settings:
-                row.extend(
-                    self._buti_csv_values[column] for column in BUTI_CSV_COLUMNS
-                )
+                row.extend(self._buti_csv_values[column] for column in BUTI_CSV_COLUMNS)
             self.csv_writer.writerow(row)
             if self._first_device_time is None:
                 self._first_device_time = time_s
                 self._first_frame_index = int(frame_idx)
-            elif self._last_frame_index is not None:
-                expected = self._last_frame_index + 1
-                if int(frame_idx) != expected and len(self._frame_index_issues) < 5:
-                    self._frame_index_issues.append(
-                        f"Device frame index changed from {self._last_frame_index} "
-                        f"to {int(frame_idx)}."
-                    )
             self._last_device_time = time_s
             self._last_frame_index = int(frame_idx)
             self._samples_written += 1
-            self._pending_samples.append(
-                (time_s, frame_idx, distance, cycle, force)
-            )
-            # Do not keep attaching progressively later images to old force
-            # samples. This is a lag guard, not proof of exposure synchronization.
-            if time_s - self._pending_samples[0][0] > 1.0:
-                message = (
-                    "Recording stopped: camera frames fell more than one second behind force samples. "
-                    "Saved files need review. Reduce acquisition resolution, check exposure and "
-                    "the camera connection, then verify the camera can keep up with the Arduino box's FPS setting before another run."
-                )
+            if requested:
+                self._images_requested += 1
+                self._pending_samples.append((time_s, frame_idx, distance, cycle, force,
+                                              self._samples_written, time.monotonic()))
+            # Compare only requested images, not intentionally skipped force rows.
+            if self._pending_samples and (time_s - self._pending_samples[0][0] > 1.0):
+                message = "Recording stopped: images fell over one second behind requested box captures. Check camera rate, exposure and the box's Delay/Capture settings."
                 self._frame_index_issues.append(message)
                 self.warning_occurred.emit(message)
                 self.synchronization_lost.emit(message)
                 self.stop_recording()
                 return
+        except ValueError as exc:
+            self._frame_index_issues.append(str(exc))
+            self.synchronization_lost.emit(str(exc))
+            self.stop_recording()
+            return
         except Exception as exc:
             log.exception("Error writing CSV row")
             self._close_failed = True
             self.error_occurred.emit(f"Error writing CSV: {exc}")
+        self._drain_triggered_frames()
         self._check_stop_condition()
 
     @pyqtSlot(QImage, object)
     def append_frame(self, qimage, raw):
-        del raw  # The argument keeps the camera buffer alive until this slot runs.
+        if not self._external_trigger:
+            self._write_frame(qimage, raw)
+            return
+        if not self.is_recording:
+            return
+        if isinstance(raw, FrameData) and raw.received_monotonic < self._recording_started_monotonic:
+            return
+        self._pending_frames.append((qimage.copy(), raw, time.monotonic()))
+        if len(self._pending_frames) > 8:
+            self._trigger_queue_failed("More than eight camera images arrived without matching Arduino trigger reports")
+            return
+        self._drain_triggered_frames()
+
+    def _drain_triggered_frames(self):
+        while self.is_recording and self._pending_samples and self._pending_frames:
+            image, raw, received = self._pending_frames.popleft()
+            self._write_frame(image, raw)
+
+    def _trigger_queue_failed(self, message):
+        self._frame_index_issues.append(message)
+        self.synchronization_lost.emit(message)
+        self.stop_recording()
+
+    def _write_frame(self, qimage, raw):
         if not self.is_recording or not self._got_first_sample:
             return
         if not self._pending_samples:
@@ -272,12 +336,34 @@ class RecordingManager(QObject):
                 mirror_vertical=self.mirror_vertical,
             )
             arr = self._qimage_to_numpy(transformed)
+            pixel_metadata = {"native_depth_preserved": False, "pixel_format": "preview fallback"}
+            if isinstance(raw, FrameData):
+                arr = raw.pixels
+                bounds = normalized_roi_to_bounds(self.normalized_roi, arr.shape[:2])
+                if bounds is not None:
+                    x0, y0, x1, y1 = bounds
+                    arr = arr[y0:y1, x0:x1]
+                if self.mirror_horizontal:
+                    arr = arr[:, ::-1]
+                if self.mirror_vertical:
+                    arr = arr[::-1]
+                arr = np.ascontiguousarray(arr)
+                pixel_metadata = {"native_depth_preserved": raw.native_depth_preserved,
+                                  "pixel_format": raw.pixel_format,
+                                  "camera_received_monotonic": raw.received_monotonic}
+            if self.tif_writer is None:
+                self.tif_writer = tifffile.TiffWriter(self._tiff_path, bigtiff=True)
             if self._first_frame_shape is None:
                 self._first_frame_shape = arr.shape
-            time_s, frame_idx, distance, cycle, force = self._pending_samples.popleft()
+            time_s, frame_idx, distance, cycle, force, sample_index, serial_received = self._pending_samples[0]
             metadata = {
                 "time_s": time_s,
                 "frameIdx": frame_idx,
+                "sample_index": sample_index,
+                "saved_image_index": self._frames_written + 1,
+                "serial_processed_monotonic": serial_received,
+                "pairing": "ordered_external_trigger_events_timing_unvalidated" if self._external_trigger else "arrival_order_after_requested_sample_not_hardware_synchronized",
+                "pixels": pixel_metadata,
                 "distance": distance,
                 "cycle": cycle,
                 "force": force,
@@ -286,6 +372,7 @@ class RecordingManager(QObject):
             if self.buti_settings:
                 metadata["buti_settings"] = self.buti_settings
             self.tif_writer.write(arr, description=json.dumps(metadata))
+            self._pending_samples.popleft()
             self._frame_counter += 1
             self._frames_written += 1
         except Exception as exc:
@@ -306,6 +393,9 @@ class RecordingManager(QObject):
         self._check_stop_condition()
 
     def _check_stop_condition(self):
+        if self._external_trigger:
+            # Allow in-flight image/serial deliveries to settle after requesting stop.
+            return
         if self._stop_requested and not self._pending_samples:
             self.stop_recording()
 
@@ -313,7 +403,7 @@ class RecordingManager(QObject):
     def _force_finalize(self):
         if not self.is_recording:
             return
-        if self._pending_samples or self._frames_written != self._samples_written:
+        if self._pending_samples or self._frames_written != self._images_requested:
             self._report_mismatch()
         self.stop_recording()
 
@@ -322,8 +412,8 @@ class RecordingManager(QObject):
             return
         self._mismatch_reported = True
         message = (
-            "Recording finalized with a synchronization mismatch: "
-            f"{self._samples_written} samples, {self._frames_written} frames."
+            "Recording finalized with missing requested images: "
+            f"{self._images_requested} requested images, {self._frames_written} saved images."
         )
         log.warning(message)
         self.warning_occurred.emit(message)
@@ -341,7 +431,7 @@ class RecordingManager(QObject):
         self._recovery_flush_timer.stop()
         pending_samples = len(self._pending_samples)
         close_ok = not self._close_failed
-        if self._got_first_sample and self._frames_written != self._samples_written:
+        if self._got_first_sample and self._frames_written != self._images_requested:
             self._report_mismatch()
 
         try:
@@ -367,14 +457,16 @@ class RecordingManager(QObject):
 
         if close_ok and self._got_first_sample and self._samples_written > 0:
             issues = list(self._frame_index_issues)
-            if self._frames_written != self._samples_written:
+            if self._pending_frames:
+                issues.append(f"{len(self._pending_frames)} triggered image(s) had no matching Arduino event.")
+            if self._frames_written != self._images_requested:
                 issues.append(
-                    f"Counts differ: {self._samples_written} force samples and "
+                    f"Counts differ: {self._images_requested} requested images and "
                     f"{self._frames_written} video frames."
                 )
             if pending_samples:
                 issues.append(
-                    f"{pending_samples} force sample(s) had no paired video frame."
+                    f"{pending_samples} requested image(s) had no paired video frame."
                 )
             duration = (
                 0.0
@@ -387,6 +479,10 @@ class RecordingManager(QObject):
                 frames_written=self._frames_written,
                 duration_s=duration,
                 pending_samples=pending_samples,
+                images_requested=self._images_requested,
+                capture_mode=self.capture_mode,
+                observed_box=self._box_observation.snapshot(),
+                timing_mode="external_trigger" if self._external_trigger else "software",
                 first_frame_index=self._first_frame_index,
                 last_frame_index=self._last_frame_index,
                 issues=issues,
@@ -394,9 +490,9 @@ class RecordingManager(QObject):
             try:
                 final_csv, final_tiff = finalize_partial_pair(
                     self._csv_path,
-                    self._tiff_path,
+                    self._tiff_path if self._frames_written else "",
                     self._final_csv_path,
-                    self._final_tiff_path,
+                    self._final_tiff_path if self._frames_written else "",
                 )
             except Exception as exc:
                 close_ok = False
@@ -406,7 +502,7 @@ class RecordingManager(QObject):
                 )
             else:
                 summary.csv_size_bytes = os.path.getsize(final_csv)
-                summary.tiff_size_bytes = os.path.getsize(final_tiff)
+                summary.tiff_size_bytes = os.path.getsize(final_tiff) if final_tiff else 0
                 try:
                     complete_manifest(
                         self._partial_manifest_path,
@@ -432,6 +528,7 @@ class RecordingManager(QObject):
                         pass
                     except OSError:
                         log.warning("Unable to remove unused partial file %s", path)
+        self._pending_frames.clear()
         self._got_first_sample = False
         self._frame_counter = 0
         log.info("Recording stopped and files closed.")

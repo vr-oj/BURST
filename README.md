@@ -1,8 +1,10 @@
 ﻿# BURST
 
-**BURST** (BUTI Uniaxial Recording of Strain & Tension) is a Python application for synchronized acquisition of force data from the BUTI Arduino Box and live camera imaging. The app listens to the BUTI Arduino Box to stream force measurements, live plots force vs. time, and saves perfectly aligned recordings (CSV + TIFF stack) for later analysis.
+**BURST** (BUTI Uniaxial Recording of Strain & Tension) is a Python application for acquisition of force data from the BUTI Arduino Box and live camera imaging. The app listens to the BUTI Arduino Box to stream force measurements, live plots force vs. time, and saves force samples and associated images (CSV + optional TIFF stack) for later analysis.
 
 ---
+See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supported controls and synchronization limits.
+
 ## Quick Start
 
 1. **Connect BUTI Arduino Box** – Select the BUTI Arduino Box COM port and click **Connect BUTI Arduino Box**.
@@ -10,7 +12,7 @@
 3. **Adjust Exposure/Gain** – Use the always-visible **Camera Settings** card above the live camera to fine-tune the full-width controls.
 4. **Zero BURST** – Ensure the force reading is zeroed before recording.
 5. **Choose a Session** – Select or create the session that will contain its Run folders.
-6. **Start Recording** – Click the prominent red **Start Recording** button in the BUTI status strip to begin synchronized acquisition.
+6. **Start Recording** – Click the prominent red **Start Recording** button in the BUTI status strip to begin acquisition. Exposure timing is not verified.
 7. **Finish Recording** – BURST stops automatically when device data ends, plays the selected completion cue, and shows one window with recording-integrity details, paired-file naming, folder access, and an optional **Open in BRAID** action when BRAID is installed.
 8. **Playback & Export** – Open **Playback** and select the TIFF; BURST finds its paired CSV automatically so you can review the stack, overlay force data, and export frames.
 
@@ -20,7 +22,7 @@
 ### Real-Time Force + Video Recording
 - The BUTI Arduino Box acts as the master clock, generating trigger pulses (`CamTrig`) for every frame.
 - A matching serial message (`frame_index, time_s, force_value`) is emitted by the BUTI Arduino Box immediately after each pulse.
-- BURST waits for the first BUTI Arduino Box tick before writing data, guaranteeing tight synchronization between force readings and captured frames.
+- BURST saves every force sample and follows box trigger-counter changes for image selection. This is software association, not verified exposure synchronization. In software mode the first row establishes the counter baseline. Arduino trigger mode instead requires the box counter to be zeroed before recording.
 
 ### Live Force Plotting
 - Streams force data from the BUTI Arduino Box at 460800 baud and renders a live trace with frame index, elapsed time, and force annotations.
@@ -38,7 +40,7 @@
 - Enables exposure, gain, auto modes, and frame rate controls according to device capabilities.
 - See [camera SDK installation, compatibility, and packaging](buti_app/docs/cameras.md).
 
-### Synchronized Output
+### Force and image output
 - Recording folder structure groups multiple runs into a named daily session:
   ```
   BURST_ROOT/YYYY-MM-DD/Session Name/RunN/
@@ -52,17 +54,17 @@
 - Active files and a small run manifest remain marked as partial until both
   outputs close. BURST periodically flushes them and offers to validate and
   recover readable data after an interrupted app session.
-- BUTI v5.2 experiment headers are synchronized while the serial connection is
+- BUTI v5.2 experiment headers are received while the serial connection is
   active. The latest preload, deformation, rates, cycles, wire diameter,
   constant tension, and experiment type are appended to every sample row in
-  the synchronized CSV. The original five telemetry columns remain first for
+  the force CSV. The original five telemetry columns remain first for
   compatibility, and the same snapshot is retained in TIFF metadata and the
   run recovery manifest.
 - Default save location is `~/Documents/BURST Results`. Set `BURST_RESULTS_DIR` (or the legacy `BUTI_RESULTS_DIR`) to override.
 - Playback tools support zoom, pan, drawn or exact pixel-coordinate ROI
   selection, exporting annotated frames, and cropping an ROI across the
   complete TIFF recording without changing the original recording or its
-  synchronized CSV data. The same `X`, `Y`, `Width`, and `Height` can be
+  associated CSV data. The same `X`, `Y`, `Width`, and `Height` can be
   batch-applied to a visible queue of up to five TIFF runs.
 - Playback opens large TIFF stacks with bounded, on-demand frame and preview
   caches instead of expanding and pre-rendering the complete recording in RAM.
@@ -73,7 +75,7 @@
 - Several bundled completion cues are available from the **Acquisition** menu,
   with a gentler default, instant preview, and a remembered selection.
 - The post-recording integrity card summarizes frame/sample counts, duration,
-  file sizes, continuity, and synchronization warnings. Hover over a metric or
+  file sizes, continuity, and missing-image warnings. Hover over a metric or
   status for a more detailed explanation.
 - When BRAID is installed, **Open in BRAID** launches the finalized TIFF using
   a generic file-path handoff. BURST and BRAID remain separate applications;
@@ -95,12 +97,12 @@ BURST relies on a hardware-triggered acquisition model driven by the BUTI Arduin
 | Component | Role |
 |-----------|------|
 | **BUTI Arduino Box** | Master clock that sends trigger pulses and serial messages |
-| **Camera**  | Trigger capability depends on camera, wiring, and backend configuration; rate readiness does not verify hardware synchronization |
+| **Camera** | External trigger input, compatible wiring and a supported adapter are required for Arduino hardware-trigger timing. Cameras without triggering remain supported through explicitly labelled software pairing. Validate the physical setup before relying on precise synchronization. |
 | **App**     | Listens for the first BUTI Arduino Box message, then records video + CSV |
 
 Each cycle:
 1. The BUTI Arduino Box toggles `CamTrig` to expose the camera.
-2. The BUTI Arduino Box emits synchronized serial data.
+2. The BUTI Arduino Box emits timestamps, trigger counters, and force data.
 3. BURST pairs the frame with the force reading and saves both.
 
 Key threads:
@@ -214,7 +216,7 @@ files above.
      TIFFs to **Batch Crop** and choose **Crop Selected TIFFs** to apply the
      shared bounds. Batch results are saved beside each source as
      `<original>_cropped.tif`; existing results are skipped. Original TIFFs and
-     synchronized CSV files remain intact.
+     associated CSV files remain intact.
 
 ---
 ## Troubleshooting

@@ -39,7 +39,7 @@ backend can use it; otherwise an installed adapter implements the contract below
    The resolution selector shows the dimensions read during setup, or says that
    resolution will be read on start for older saved profiles. It updates to the
    opened camera's actual dimensions. Geometry and pixel type initially come from
-   the configuration. Let delivery stabilize before recording. The normal 10 FPS
+   the configuration. Let delivery stabilize before recording. The preview rate
    readiness check and recording lag guard apply.
 
 BURST stores configuration **paths** in per-user settings. It does not copy or
@@ -83,19 +83,18 @@ must include the bridge. Source users update their environment with Command Prom
 Acquisition uses MMCore's dedicated continuous-acquisition API and sequence buffer,
 detects reported overflow, and copies images
 before native buffers can be reused. Supported images are single-channel 8/16-bit
-monochrome and packed 32-bit RGB. High-bit-depth monochrome is scaled by its reported
-bit depth to BURST's existing **8-bit preview/TIFF pipeline**; original 16-bit precision
-is not preserved. Float, RGB64 and multi-camera/channel payloads fail with an
-explanation instead of being interpreted incorrectly.
+monochrome and packed 32-bit RGB. High-bit-depth monochrome is scaled for the 8-bit
+preview while the original source pixels are preserved separately for TIFF recording.
+Float, RGB64 and multi-camera/channel payloads fail with an explanation instead of
+being interpreted incorrectly.
 
-Trigger settings are preserved from the configuration. Start with internal/free-running
-triggering for BURST's preview/readiness workflow. An external-trigger configuration
-without incoming pulses will time out; this integration does not implement a complete
-Arduino-triggered startup/validation workflow. MMCore's nominal sequence interval
-does not reliably set camera FPS. BURST requests 10 through `AcquisitionFrameRate`
-where exposed, otherwise the adapter's own properties/configuration set the rate,
-and measured delivery determines readiness. Passing readiness never proves exposure
-synchronization.
+Software pairing uses Off/Internal triggering when the adapter exposes a recognized
+TriggerMode property. Arduino trigger mode requires the adapter to expose TriggerMode,
+TriggerSelector, TriggerSource and TriggerActivation with the requested values; otherwise
+arming fails with guidance. The configured source waits for pulses without the software
+preview timeout. MMCore's nominal sequence interval does not reliably set camera FPS.
+BURST requests 10 through AcquisitionFrameRate where exposed. Measured delivery and
+requested-image accounting remain separate from physical timing validation.
 
 References: [Micro-Manager Python integration](https://micro-manager.org/Using_the_Micro-Manager_python_library),
 [supported hardware](https://micro-manager.org/Device_Support),
@@ -154,7 +153,7 @@ and common installed Spinnaker `bin64` / `bin64/vs2015` directories to the Windo
 DLL search path. The vendor's runtime installer is still required.
 
 The GenTL implementation supports single-component Mono8, unpacked Mono10/12/14/16,
-RGB8 and BGR8 images. Higher-depth grayscale uses a fixed right shift to 8-bit.
+RGB8 and BGR8 images. Higher-depth grayscale uses a fixed right shift for preview; recordings preserve its source values.
 Packed Bayer, multi-component, and multi-stream payloads need further adapters or
 conversion support; select Mono8/RGB8 when the camera offers them. Not every vendor
 producer or feature has been validated with hardware.
@@ -273,40 +272,46 @@ and clean-machine installation must be checked before that release is distribute
 
 ## Frame rate and trigger timing
 
-BURST requests 10 FPS by default. Let the preview run for at least five seconds.
-The preview shows measured delivery rate; recording readiness checks both delivery
-and any reported configured/maximum rate. Measured delivery allows 5% tolerance.
-A lower rate blocks recording and opens camera help with options to request 10 FPS,
-stop and adjust acquisition resolution, use Mono8, shorten exposure, improve lighting,
-or check the USB connection and vendor bandwidth settings. IC4, Spinnaker and GenTL
-offer smaller sensor regions where available. These may crop the field of view;
-the separate recording ROI does not reduce camera transfer bandwidth.
+BURST requests 10 FPS for preview by default. Recording uses the Arduino's
+trigger-counter transitions rather than assuming one image per force sample.
+Read [Arduino compatibility](arduino.md) for the firmware protocol and rate setup.
 
-For cameras that sustain 5 FPS but cannot sustain 10 FPS, Camera rate help offers
-**Use 5 FPS**. First set the Arduino box's camera FPS setting to 5 using its onboard
-setup (restart/setup and reconnect first if necessary), then confirm in BURST.
-BURST changes its recording target and records it in metadata; it does not send a
-rate command to the box or independently verify that setting. The camera may run
-faster: extra frames without a waiting force sample are not saved. Measurements
-at 5 FPS are 200 ms apart and may miss fast changes. Rate and backlog checks remain
-active. **Use 10 FPS** restores the default after confirming the box setting.
-Restarting BURST or reconnecting the box resets the target to 10 FPS, so confirm
-5 FPS again after reconnecting. This selection does not configure hardware triggers.
+In **Follow box Capture** mode, every force sample is saved. A counter increase
+requests one associated image; repeated counters intentionally request none.
+The first row is only a baseline because its trigger phase is unknown. A constant
+counter produces a CSV with no TIFF. This follows the box's emitted requests,
+including capture changes, without pretending to read its menu selections.
 
-During recording, more than one second of unpaired force samples stops recording
-and requests a device stop. Saved files are retained and marked for review. This
-limits accumulating lag; it cannot guarantee alignment or recover missing frames.
+For a camera delivering 6.84 FPS, BUTI v5.1/v5.2 Advanced settings → Delay (ms) = 200
+requests approximately 5 force samples/second. Capture Every then requests about
+5 images/second. Alternatively, at Delay = 100 and Capture 1 in 5, all approximately
+10 force samples/second are saved with about 2 images/second. The actual rates are
+observed from device timestamps and counters; they are not remotely configurable.
 
-**A passing rate check is not proof of synchronization.** The FLIR adapter currently
-sets `TriggerMode=Off`: frames run independently of the Arduino. A missing trigger
-cable prevents hardware-triggered exposure, but does not explain a reported 6.83 FPS
-limit in this free-running configuration. Connecting a cable alone changes no software
-settings. Hardware synchronization requires electrically compatible wiring, correct
-trigger input/source/polarity configuration and validation of exposure-to-force timing.
-That trigger workflow is not implemented by the rate check. Recordings currently pair
-images and force samples in arrival order; metadata records this limitation and the
-measured preview rate. Spinnaker diagnostics also expose rate, exposure, trigger and
-available throughput settings in the help dialog and recording metadata.
+A slow preview prompts guidance before recording. A warm preview is required for
+software image recording; a configured, armed camera is required in trigger mode. During acquisition, more than one second of outstanding requested
+images stops recording and requests a device stop. Backwards/nonadvancing device
+time or a backwards counter also stops recording for review. Gaps in trigger counts
+are reported. These checks cannot establish exposure synchronization.
+
+Choose **Acquisition → Camera timing** before starting the camera. Software pairing
+is the initial default. Arduino trigger mode configures FrameStart, a user-selected
+physical input and RisingEdge, verifies readback after arming, and waits for box
+pulses without a preview timeout. This requires a trigger-capable camera and compatible
+wiring. IC4, Spinnaker, GenTL and Micro-Manager adapters exposing the required nodes
+can be armed. Unsupported adapters remain usable in explicit software mode; failures
+never silently fall back. Use ZERO on the box before each triggered run. Hardware
+mode handles images and serial events arriving in either order; see the Arduino
+guide for limits and required physical timing validation.
+
+TIFF metadata identifies the force sample associated with each saved page and the
+saved image index. Playback uses this association for sparse recordings. Host
+receipt/processing timestamps are diagnostic only; they are not exposure timestamps.
+Owned monochrome 8/16-bit data from IC4, Micro-Manager, GenTL and Spinnaker are recorded
+independently of the 8-bit preview. Packed Spinnaker monochrome formats use the SDK's
+Mono16 conversion. Color conversion paths may still save RGB8; per-page metadata
+states whether native depth was preserved. Third-party backends without FrameData
+use the preview fallback and are labelled accordingly.
 
 ## Hardware acceptance checks
 
@@ -321,5 +326,5 @@ failure cleanup, ROI/mirroring, and TIFF/force recording. Before a hardware rele
 - OpenCV: DirectShow and Media Foundation fallback, actual negotiated resolution,
   and USB disconnect behavior.
 - Mixed cameras: unified labels, stable refresh selection, conservative duplicates.
-- All paths: live ROI, both mirrors, synchronized force + TIFF recording, metadata,
+- All paths: live ROI, both mirrors, associated force + TIFF recording, metadata,
   playback, and shutdown during/after a run.
