@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Simplify Micro-Manager camera setup to finding a camera or loading a saved
+  configuration, with mappings and profile sharing under Advanced options and
+  technical messages under Details. Native IC4 needs no Micro-Manager setup.
 - Keep camera input rows readable when Micro-Manager controls or adapter warnings
   appear. Place camera properties and warning details in the settings heading
   and keep recording status on one line.

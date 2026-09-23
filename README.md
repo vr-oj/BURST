@@ -33,10 +33,10 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
 ### High-Speed Camera Preview & Control
 - Lists native IC4 cameras first, followed by saved Micro-Manager camera connections.
 - Add Micro-Manager cameras through **Acquisition → Advanced → Micro-Manager Camera Setup…**.
-  Use **Find cameras**, or load a saved `.cfg`, add a camera, and save.
+  Use **Find cameras** or **Load configuration…**, add a camera, and save.
   Compatible cameras use the normal image controls; **Resolution** offers reported
   binning and sensor regions. Additional controls are under **Camera properties…**.
-  Optional camera mappings can be saved and shared from setup without editing code.
+  Optional mappings and profile sharing are under **Advanced options** in setup.
   Compatible Micro-Manager adapters and vendor drivers must be installed; users do
   not need to copy files into BURST's installation folder. See [camera setup](buti_app/docs/cameras.md).
 - Uses Micro-Manager's installed device adapters for other camera vendors.

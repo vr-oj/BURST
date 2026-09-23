@@ -23,20 +23,23 @@ expose the required camera features. Both integrations remain optional at runtim
 2. Close Micro-Manager and other camera programs. In BURST open
    **Acquisition → Advanced → Micro-Manager Camera Setup…**. The installation from
    a saved connection is reused; BURST also looks in standard installation folders.
-   Select another folder if needed and choose **Find cameras**.
+   Use **Change folder…** if needed and choose **Find cameras**. IC4 cameras
+   connect directly and do not require this setup.
 3. Discovery checks adapters in separate helper processes, with a ten-second
    request budget per adapter and a sixty-second search budget (plus process cleanup).
    **Cancel search** keeps results already found. SpinnakerC model/serial choices
    and adapters implementing device detection can identify cameras automatically.
    No configuration values, serial numbers or hub connections are guessed.
-   Missing SDKs, adapter/API errors and initialization requirements appear in setup.
+   Setup shows a short result; **Details…** contains missing SDKs, adapter/API
+   errors and initialization requirements.
    An installation is usable only when its adapter actually loads with BURST's MMCore.
 4. If your camera needs additional setup, native dialogs or other devices, save a
    camera hardware configuration (`.cfg`) from Micro-Manager in a permanent user
    folder. Prefer a camera-only configuration: loading it initializes **all** devices
-   named in it. Select that file and **Load configuration and find cameras**.
+   named in it. Choose **Load configuration…** and select that file; BURST loads
+   and checks it automatically.
    Discovery/configuration loading does not certify image acquisition or timing. Select a camera, click
-   **Add selected camera**, then **Save**. Multiple configurations can be saved;
+   **Add camera**, then **Save**. Multiple configurations can be saved;
    the same dialog removes saved entries without deleting any files.
 5. Select the saved Micro-Manager entry from **Camera Device** and start the preview.
    The resolution selector shows the dimensions read during setup, or says that
@@ -81,7 +84,7 @@ permanently read-only and initialization properties stay disabled. Applied value
 come from camera readback, including quantization. Unsupported layouts are rejected
 and the previous setting/preview is restored; failed restoration is reported.
 
-**Advanced camera mapping…** in setup is optional. Select a saved camera, choose
+**Advanced options → Advanced camera mapping…** in setup is optional. Select a saved camera, choose
 existing properties and their native units, and assign native automatic/manual
 enum values. Two timing tabs support ordered property/value assignments for preview
 and external triggering. Leave both empty for automatic timing setup. These contain
@@ -89,11 +92,11 @@ data only, never scripts. Timing mappings must not change mapped image controls.
 BURST validates the connected adapter's property names and values before using a
 mapping, and checks readback again when arming. Invalid mappings cannot start the box.
 
-Saved mappings take precedence over documented aliases. **Export selected profile…**
-and **Import camera profile…** share the connection/mapping as JSON. The receiving
+Saved mappings take precedence over documented aliases. **Export profile…**
+and **Import profile…** under Advanced options share the connection/mapping as JSON. The receiving
 lab still needs compatible drivers/adapters and must select its own installation,
-configuration path and camera serial. After import, verify paths, load and add the
-camera, then Save. Advanced mapping can repair a stale imported or saved mapping.
+configuration path and camera serial. After import, verify the local paths, choose
+**Check configuration**, add the camera, then Save. Advanced mapping can repair a stale imported or saved mapping.
 Legacy profiles remain readable. Nothing needs copying into Program Files/BURST.
 Explicitly saved MM entries remain selectable even when a native SDK also lists
 that camera. Discovery deduplicates only by reliable vendor/serial identity or the

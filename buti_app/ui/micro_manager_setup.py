@@ -1,14 +1,16 @@
 """User-owned Micro-Manager configurations; native work stays off the GUI thread."""
 from copy import deepcopy
 from pathlib import Path
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFileDialog, QComboBox, QListWidget, QDialogButtonBox, QTextEdit, QSizePolicy)
+    QPushButton, QFileDialog, QComboBox, QListWidget, QDialogButtonBox, QTextEdit, QSizePolicy,
+    QWidget, QToolButton)
 import logging
 from cameras.micro_manager_backend import validate_profile, installation_candidates
 from cameras.micro_manager_process import MicroManagerClient, MicroManagerCancelled
 from cameras.micro_manager_discovery import find_cameras
 from cameras.micro_manager_profiles import profile_key, read_profile, write_profile
+from ui.style_constants import PANEL_STYLESHEET
 
 log = logging.getLogger(__name__)
 
@@ -61,32 +63,20 @@ class MicroManagerSetupDialog(QDialog):
         self._cancel_requested = False
         self.validated = None
         self.setWindowTitle("Micro-Manager Camera Setup")
-        self.resize(760, 720)
+        self.setMinimumWidth(640)
+        self.resize(680, 490)
         layout = QVBoxLayout(self)
-        intro = QLabel("Find cameras using installed Micro-Manager adapters, or load a saved hardware configuration. "
-            "Keep vendor drivers installed and close other camera applications first. "
-            "Use a camera-only configuration: importing a configuration initializes every device in it.")
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+        intro = QLabel("Add a camera through Micro-Manager. IC4 cameras connect directly "
+                       "and do not need this setup.")
         intro.setWordWrap(True)
-        intro.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         layout.addWidget(intro)
-        layout.addWidget(QLabel("Saved cameras"))
-        self.saved = QListWidget()
-        self.saved.setStyleSheet("QListWidget { background: #2d2d2d; color: #f0f0f0; }")
-        layout.addWidget(self.saved)
-        remove = QPushButton("Remove selected saved camera")
-        remove.clicked.connect(self._remove)
-        saved_actions = QHBoxLayout()
-        saved_actions.addWidget(remove)
-        self.mapping = QPushButton("Advanced camera mapping…")
-        self.mapping.clicked.connect(self._map_saved)
-        saved_actions.addWidget(self.mapping)
-        layout.addLayout(saved_actions)
-        sharing = QHBoxLayout()
-        for title, callback in (("Import camera profile…", self._import), ("Export selected profile…", self._export)):
-            button = QPushButton(title)
-            button.clicked.connect(callback)
-            sharing.addWidget(button)
-        layout.addLayout(sharing)
+        prerequisite = QLabel("Install your camera's drivers and close other camera applications first.")
+        prerequisite.setWordWrap(True)
+        prerequisite.setProperty("cssClass", "detailLabel")
+        layout.addWidget(prerequisite)
+
         self.installation = QLineEdit()
         candidates = installation_candidates()
         previous = next((p["installation"] for p in reversed(self.profiles)
@@ -94,63 +84,189 @@ class MicroManagerSetupDialog(QDialog):
         if previous or candidates:
             self.installation.setText(previous or candidates[-1])
         self.config = QLineEdit()
-        for title, field, callback in (("Micro-Manager folder", self.installation, self._browse_installation),
-                                      ("Hardware configuration (.cfg, optional)", self.config, self._browse_config)):
-            if field is self.config:
-                find_position = layout.count()
-            layout.addWidget(QLabel(title))
-            row = QHBoxLayout()
-            row.addWidget(field)
-            browse = QPushButton("Browse…")
-            browse.clicked.connect(callback)
-            row.addWidget(browse)
-            layout.addLayout(row)
-            field.textChanged.connect(self._invalidate)
-        self.test = QPushButton("Load configuration and find cameras")
-        self.test.clicked.connect(self._probe)
-        layout.addWidget(self.test)
-        row = QHBoxLayout()
+        installation_row = QHBoxLayout()
+        self.installation_summary = QLabel()
+        self.installation_summary.setWordWrap(True)
+        installation_row.addWidget(self.installation_summary, 1)
+        self.change_folder = QPushButton("Change folder…")
+        self.change_folder.clicked.connect(self._browse_installation)
+        installation_row.addWidget(self.change_folder)
+        layout.addLayout(installation_row)
+
+        search_row = QHBoxLayout()
         self.find = QPushButton("Find cameras")
+        self.find.setProperty("cssClass", "primary")
+        self.find.setDefault(True)
         self.find.clicked.connect(self._find)
-        row.addWidget(self.find)
+        search_row.addWidget(self.find)
+        self.load_config = QPushButton("Load configuration…")
+        self.load_config.clicked.connect(self._browse_config)
+        self.load_config.setToolTip("Choose a camera-only Micro-Manager .cfg file. "
+                                   "Loading a configuration initializes every device listed in it.")
+        search_row.addWidget(self.load_config)
+        search_row.addStretch()
         self.cancel_search = QPushButton("Cancel search")
-        self.cancel_search.setVisible(False)
+        self.cancel_search.hide()
         self.cancel_search.clicked.connect(self._cancel_search)
-        row.addWidget(self.cancel_search)
-        layout.insertLayout(find_position, row)
+        search_row.addWidget(self.cancel_search)
+        layout.addLayout(search_row)
+
+        status_row = QHBoxLayout()
+        self.status = QLabel("Find a connected camera, or load a configuration you already use.")
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.PlainText)
+        self.status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        status_row.addWidget(self.status, 1)
+        self.details_button = QPushButton("Details…")
+        self.details_button.clicked.connect(self._show_details)
+        self.details_button.hide()
+        status_row.addWidget(self.details_button)
+        layout.addLayout(status_row)
+        # Keep diagnostics available without expanding the normal setup flow.
+        self.details = QTextEdit(self)
+        self.details.hide()
+        self.details.setReadOnly(True)
+
+        results_row = QHBoxLayout()
+        results_row.addWidget(QLabel("Camera"))
         self.cameras = QComboBox()
-        layout.addWidget(self.cameras)
-        self.add = QPushButton("Add selected camera")
+        self.cameras.setMinimumWidth(0)
+        self.cameras.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cameras.setPlaceholderText("Available cameras")
+        self.cameras.setEnabled(False)
+        results_row.addWidget(self.cameras, 1)
+        self.add = QPushButton("Add camera")
         self.add.setEnabled(False)
         self.add.clicked.connect(self._add)
-        layout.addWidget(self.add)
-        self.status = QLabel("No configuration loaded yet. Camera capture is checked when you start its preview.")
-        self.status.setWordWrap(True)
-        self.status.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        layout.addWidget(self.status)
-        self.details = QTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setMaximumHeight(100)
-        self.details.hide()
-        layout.addWidget(self.details)
+        results_row.addWidget(self.add)
+        layout.addLayout(results_row)
+
+        saved_header = QHBoxLayout()
+        saved_header.addWidget(QLabel("Saved cameras"))
+        saved_header.addStretch()
+        self.remove = QPushButton("Remove")
+        self.remove.clicked.connect(self._remove)
+        saved_header.addWidget(self.remove)
+        layout.addLayout(saved_header)
+        self.saved = QListWidget()
+        self.saved.setMinimumHeight(80)
+        self.saved.setMaximumHeight(125)
+        self.saved.setStyleSheet("QListWidget { background: #2d2d2d; color: #f0f0f0; }")
+        self.saved.currentRowChanged.connect(self._update_actions)
+        layout.addWidget(self.saved)
+        saved_hint = QLabel("After saving, choose your camera from BURST's Camera Device list.")
+        saved_hint.setWordWrap(True)
+        saved_hint.setProperty("cssClass", "detailLabel")
+        layout.addWidget(saved_hint)
+
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setText("Advanced options")
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setArrowType(Qt.RightArrow)
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setStyleSheet(
+            "QToolButton { color: #e0e0e0; background: transparent; border: none; padding: 4px 0; }"
+            "QToolButton:hover { color: white; }")
+        self.advanced_toggle.toggled.connect(self._toggle_advanced)
+        layout.addWidget(self.advanced_toggle)
+        self.advanced = QWidget()
+        advanced_layout = QVBoxLayout(self.advanced)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        for title, field in (("Micro-Manager folder", self.installation),
+                             ("Configuration file (.cfg)", self.config)):
+            advanced_layout.addWidget(QLabel(title))
+            advanced_layout.addWidget(field)
+            field.textChanged.connect(self._invalidate)
+        self.installation.textChanged.connect(self._update_installation_summary)
+        self.test = QPushButton("Check configuration")
+        self.test.clicked.connect(self._probe)
+        advanced_layout.addWidget(self.test)
+        sharing = QHBoxLayout()
+        self.mapping = QPushButton("Advanced camera mapping…")
+        self.mapping.clicked.connect(self._map_saved)
+        sharing.addWidget(self.mapping)
+        self.import_button = QPushButton("Import profile…")
+        self.import_button.clicked.connect(self._import)
+        sharing.addWidget(self.import_button)
+        self.export_button = QPushButton("Export profile…")
+        self.export_button.clicked.connect(self._export)
+        sharing.addWidget(self.export_button)
+        advanced_layout.addLayout(sharing)
+        layout.addWidget(self.advanced)
+        self.advanced.hide()
+
         self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
+        self.setStyleSheet(PANEL_STYLESHEET)
+        self._update_installation_summary()
         self._refresh_saved()
+        self._update_actions()
         if sdk is None:
-            self.test.setEnabled(False)
-            self.find.setEnabled(False)
-            self.mapping.setEnabled(False)
-            self.status.setText("This BURST installation cannot load Micro-Manager support. "
-                "Install a BURST release with Micro-Manager support, then use matching Micro-Manager device adapters. "
-                + unavailable)
+            self.status.setText("Micro-Manager support is missing from this BURST installation. "
+                                "Install a BURST build with Micro-Manager support.")
+            self._set_details(unavailable)
+
+    def _update_installation_summary(self):
+        folder = self.installation.text()
+        self.installation_summary.setText("Micro-Manager: " + Path(folder).name if folder else
+                                          "Micro-Manager not found. Choose its installation folder.")
+        self.installation_summary.setToolTip(folder)
+
+    def _update_actions(self):
+        idle = self.worker is None
+        available = idle and self.sdk is not None
+        selected = self.saved.currentRow() >= 0
+        self.find.setEnabled(available)
+        self.load_config.setEnabled(available)
+        self.test.setEnabled(available)
+        self.change_folder.setEnabled(idle)
+        self.remove.setEnabled(idle and selected)
+        self.mapping.setEnabled(available and (selected or self._imported is not None))
+        self.import_button.setEnabled(idle)
+        self.export_button.setEnabled(idle and selected)
+        self.cameras.setEnabled(idle and self.cameras.count() > 0)
+        self.add.setEnabled(idle and self.validated is not None and self.cameras.currentIndex() >= 0)
+        self.buttons.button(QDialogButtonBox.Save).setEnabled(idle)
+
+    def _toggle_advanced(self, expanded):
+        width = self.width()
+        self.advanced.setVisible(expanded)
+        self.advanced_toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.adjustSize()
+        self.resize(width, self.height())
+
+    def _set_details(self, text):
+        self.details.setPlainText(text)
+        self.details_button.setVisible(bool(text))
+
+    def _show_details(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Camera setup details")
+        dialog.resize(640, 360)
+        layout = QVBoxLayout(dialog)
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(self.details.toPlainText())
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec_()
 
     def _refresh_saved(self):
+        selected = self.saved.currentRow()
         self.saved.clear()
         for p in self.profiles:
-            self.saved.addItem(f"{p.get('display_name', p.get('camera', '?'))} — "
-                              f"{p.get('connection', {}).get('library') or p.get('config', '')}")
+            name = p.get("display_name") or p.get("camera", "Camera")
+            if not p.get("display_name") and p.get("config"):
+                name = f"{Path(p['config']).stem} · {name}"
+            self.saved.addItem(name)
+            self.saved.item(self.saved.count() - 1).setToolTip(
+                p.get("connection", {}).get("library") or p.get("config", ""))
+        if self.profiles:
+            self.saved.setCurrentRow(max(0, min(selected, len(self.profiles) - 1)))
 
     def _remove(self):
         if self.worker is not None:
@@ -170,15 +286,18 @@ class MicroManagerSetupDialog(QDialog):
     def _browse_config(self):
         if self.worker is not None:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Micro-Manager configuration", self.config.text(), "Hardware configurations (*.cfg)")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a camera-only Micro-Manager configuration", self.config.text(), "Hardware configurations (*.cfg)")
         if path:
             log.info("Selected Micro-Manager configuration: %s", path)
+            self._imported = None
             self.config.setText(path)
+            self._probe()
 
     def _invalidate(self):
         self.validated = None
         self.cameras.clear()
         self.add.setEnabled(False)
+        self.cameras.setEnabled(False)
 
     def _probe(self):
         if self.worker is not None:
@@ -189,7 +308,8 @@ class MicroManagerSetupDialog(QDialog):
                 profile["config"] = self.config.text()
             profile = validate_profile(profile)
         except ValueError as exc:
-            self.status.setText(str(exc))
+            self.status.setText("Choose a Micro-Manager folder and a valid camera configuration.")
+            self._set_details(str(exc))
             return
         self._begin_probe(profile)
 
@@ -205,15 +325,14 @@ class MicroManagerSetupDialog(QDialog):
 
     def _start_worker(self, worker, message):
         self._cancel_requested = False
-        self.test.setEnabled(False)
-        self.find.setEnabled(False)
-        self.mapping.setEnabled(False)
+        self.worker = worker
+        self._update_actions()
         self.installation.setReadOnly(True)
         self.config.setReadOnly(True)
-        self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
         self.status.setText(message)
-        self.details.hide()
-        self.worker = worker
+        self._set_details("")
+        self.cancel_search.setText("Cancel search" if isinstance(worker, CameraSearch) else "Cancel loading")
+        self.cancel_search.show()
         self.worker.finished.connect(self._finished)
         self.worker.start()
 
@@ -225,14 +344,14 @@ class MicroManagerSetupDialog(QDialog):
         installations = [self.installation.text(), *installation_candidates()]
         worker = CameraSearch([p for p in installations if p], self)
         worker.result.connect(self._found)
-        worker.progress.connect(self.status.setText)
-        self.cancel_search.setVisible(True)
-        self._start_worker(worker, "Finding cameras… Up to 10 seconds per adapter, 60 seconds total.")
+        worker.progress.connect(self.status.setToolTip)
+        self._start_worker(worker, "Finding cameras… This can take up to a minute.")
 
     def _cancel_search(self):
         if self.worker is not None:
             self.worker.requestInterruption()
-            self.status.setText("Cancelling search; keeping cameras already found…")
+            self.status.setText("Cancelling search; keeping cameras already found…" if isinstance(self.worker, CameraSearch)
+                                else "Cancelling configuration loading…")
 
     def _found(self, details):
         for result in details["cameras"]:
@@ -240,10 +359,13 @@ class MicroManagerSetupDialog(QDialog):
             self.cameras.addItem(profile.get("display_name", profile["camera"]), profile)
             self._controls[profile_key(profile)] = result["controls"]
         self.validated = {} if details["cameras"] else None
-        self.status.setText(f"Found {len(details['cameras'])} camera(s). Choose a camera and add it. "
-                           "If yours is missing, load its Micro-Manager configuration above.")
-        self.details.setPlainText("\n".join(details["issues"]))
-        self.details.setVisible(bool(details["issues"]))
+        count = len(details["cameras"])
+        if count:
+            self.cameras.setCurrentIndex(0)
+        self.status.setText(f"Found {count} camera(s). Choose one and click Add camera." if count else
+                            "No cameras found. Check the connection and drivers, or load a Micro-Manager configuration.")
+        self._set_details("\n".join(details["issues"]))
+        self._update_actions()
 
     def _loaded(self, details):
         self.validated = dict(self._pending_profile)
@@ -252,28 +374,30 @@ class MicroManagerSetupDialog(QDialog):
         self.cameras.setCurrentText(details["selected"])
         for camera, controls in details.get("controls", {}).items():
             self._controls[profile_key(dict(self.validated, camera=camera))] = controls
-        self.status.setText(f"Configuration loaded. {details['version']}; {details['api']}. "
-            "Choose a camera and add it. Image delivery and synchronization have not been verified.")
+        self.status.setText("Configuration loaded. Choose a camera and click Add camera." if details["cameras"] else
+                            "This configuration does not contain a camera. Choose a camera configuration.")
+        self._set_details(f"{details['version']}\n{details['api']}\n\n"
+                          "Start the camera in BURST to check preview. Setup does not verify recording synchronization.")
+        self._update_actions()
 
     def _failed(self, message):
         self.validated = None
         self.cameras.clear()
-        self.status.setText("Could not load the configuration: " + message +
-            "\nCheck vendor drivers, close other camera applications, and use device adapters compatible with BURST's MMCore. "
-            "An older Micro-Manager installation may need updating.")
+        self.status.setText("Could not connect to the camera. Close other camera apps and check its drivers. "
+                            "Open Details for the reported problem.")
+        self._set_details(message + "\n\nUse Micro-Manager adapters compatible with this BURST build. "
+                          "An older Micro-Manager installation may need updating.")
+        self._update_actions()
 
     def _finished(self):
         self.worker.deleteLater()
         self.worker = None
-        self.test.setEnabled(self.sdk is not None)
-        self.find.setEnabled(self.sdk is not None)
-        self.mapping.setEnabled(self.sdk is not None)
         self.cancel_search.hide()
+        self.status.setToolTip("")
         self.installation.setReadOnly(False)
         self.config.setReadOnly(False)
         self.buttons.setEnabled(True)
-        self.buttons.button(QDialogButtonBox.Save).setEnabled(True)
-        self.add.setEnabled(self.validated is not None)
+        self._update_actions()
         if self._cancel_requested:
             super().reject()
 
@@ -291,6 +415,7 @@ class MicroManagerSetupDialog(QDialog):
         self.profiles.append(deepcopy(profile))
         self._refresh_saved()
         self.saved.setCurrentRow(len(self.profiles) - 1)
+        self._update_actions()
         self.status.setText("Camera added. Save, select it in Camera Device, and start the preview.")
 
     def _map_saved(self):
@@ -337,9 +462,12 @@ class MicroManagerSetupDialog(QDialog):
             self.installation.setText(profile["installation"])
             self.config.setText(profile.get("config", ""))
             self._imported = profile
-            self.status.setText("Profile imported. Check local installation/configuration paths, then Load configuration and find cameras.")
+            self.advanced_toggle.setChecked(True)
+            self._update_actions()
+            self.status.setText("Profile imported. Check the local paths under Advanced options, then click Check configuration.")
         except (ValueError, OSError) as exc:
-            self.status.setText("Could not import camera profile: " + str(exc))
+            self.status.setText("Could not import this profile. Open Details for the reported problem.")
+            self._set_details(str(exc))
 
     def _export(self):
         index = self.saved.currentRow()
@@ -351,7 +479,8 @@ class MicroManagerSetupDialog(QDialog):
                 write_profile(path, self.profiles[index])
                 self.status.setText("Profile exported. The receiving lab must install its adapters/drivers and select local paths.")
             except (ValueError, OSError) as exc:
-                self.status.setText("Could not export camera profile: " + str(exc))
+                self.status.setText("Could not export this profile. Open Details for the reported problem.")
+                self._set_details(str(exc))
 
     def accept(self):
         if self.worker is None:

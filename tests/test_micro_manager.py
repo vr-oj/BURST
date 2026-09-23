@@ -371,7 +371,9 @@ class MicroManagerTests(unittest.TestCase):
     def test_setup_missing_bridge_explains_dependency(self):
         dialog = MicroManagerSetupDialog(None, unavailable="pymmcore unavailable")
         self.assertFalse(dialog.test.isEnabled())
-        self.assertIn("pymmcore unavailable", dialog.status.text())
+        self.assertFalse(dialog.find.isEnabled())
+        self.assertFalse(dialog.load_config.isEnabled())
+        self.assertIn("pymmcore unavailable", dialog.details.toPlainText())
         dialog.close()
 
     def test_rgb_conversion_and_unsupported_layout(self):
@@ -387,13 +389,17 @@ class MicroManagerTests(unittest.TestCase):
     def test_setup_validates_in_worker_and_saves_selected_camera(self):
         dialog = MicroManagerSetupDialog(self.sdk)
         dialog.installation.setText(self.profile["installation"])
-        dialog.config.setText(self.profile["config"])
-        dialog._probe()
+        # A newly selected cfg must replace a previously imported connection.
+        dialog._imported = {"connection": {"library": "OldAdapter", "device": "OldCamera"}}
+        with patch("ui.micro_manager_setup.QFileDialog.getOpenFileName", return_value=(self.profile["config"], "")):
+            dialog.load_config.click()
         deadline = time.monotonic() + 3
         while dialog.worker is not None and time.monotonic() < deadline:
             self.app.processEvents()
             QThread.msleep(5)
         self.assertIsNone(dialog.worker)
+        self.assertIsNone(dialog._imported)
+        self.assertNotIn("connection", dialog.validated)
         self.assertTrue(dialog.add.isEnabled())
         dialog.cameras.setCurrentText("Camera2")
         dialog._add()

@@ -213,6 +213,8 @@ class ProfileAndControlTests(unittest.TestCase):
         self.assertEqual(dialog.installation.text(), self.folder.name)
         discovered = dict(profile, bindings={})
         dialog._found({"cameras": [{"profile": discovered, "controls": {}}], "issues": []})
+        self.assertEqual(dialog.cameras.currentData(), discovered)
+        self.assertTrue(dialog.add.isEnabled())
         dialog._add()
         self.assertEqual(len(dialog.profiles), 1)
         self.assertEqual(dialog.profiles[0]["bindings"], profile["bindings"])
