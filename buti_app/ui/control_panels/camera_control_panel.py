@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QSlider,
     QSizePolicy,
     QPushButton,
+    QLineEdit,
 )
 from ..style_constants import PANEL_STYLESHEET
 
@@ -34,6 +35,8 @@ class CameraControlPanel(QWidget):
         self._exp_unit_factor = 1000.0  # property is in µs, display in ms
         self._gain_scale = 1
         self._framerate_scale = 1
+        self._unit_labels = {}
+        self._numeric_entries = {}
 
         self._auto_update_timer = QTimer(self)
         self._auto_update_timer.setInterval(500)
@@ -169,6 +172,19 @@ class CameraControlPanel(QWidget):
         self.properties_button.setVisible(False)
         self.properties_button.clicked.connect(self._show_properties)
         panel_layout.addWidget(self.properties_button)
+        self.control_message = QLabel()
+        self.control_message.setWordWrap(True)
+        self.control_message.setStyleSheet("color: #f3c969;")
+        self.control_message.hide()
+        panel_layout.addWidget(self.control_message)
+        for name, spin in (("exposure", self.exposure_spin), ("gain", self.gain_spin), ("fps", self.framerate_spin)):
+            entry = QLineEdit(spin.parentWidget())
+            entry.setMaximumWidth(110)
+            entry.setProperty("cssClass", "monoInput")
+            spin.parentWidget().layout().insertWidget(0, entry)
+            entry.hide()
+            entry.editingFinished.connect(lambda n=name: self._set_numeric_entry(n))
+            self._numeric_entries[name] = entry
 
         if not self._embedded:
             panel_layout.addStretch()
@@ -211,6 +227,7 @@ class CameraControlPanel(QWidget):
         value_layout.addWidget(spinbox)
 
         unit_label = QLabel(unit_text)
+        self._unit_labels[spinbox] = unit_label
         unit_label.setProperty("cssClass", "microLabel")
         unit_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         value_layout.addWidget(unit_label)
@@ -262,6 +279,10 @@ class CameraControlPanel(QWidget):
         self.properties_button.setVisible(any(key.startswith(("mm:", "mmcore:")) for key in capabilities))
         self.properties_button.setEnabled(not self.is_recording)
         self.setToolTip(self.controller.last_error if self.controller else "")
+        error = self.controller.last_error if self.controller else ""
+        self.control_message.setText(error)
+        self.control_message.setVisible(bool(error))
+        issues = self.controller.diagnostics().get("control_issues", {}) if self.controller else {}
         rows = (
             ("exposure", self.exposure_spin, self.exposure_slider, "_exp_scale", 1000.0, "auto_exposure"),
             ("gain", self.gain_spin, self.gain_slider, "_gain_scale", 1.0, "auto_gain"),
@@ -270,10 +291,26 @@ class CameraControlPanel(QWidget):
         for name, spin, slider, scale_name, factor, auto_name in rows:
             prop = capabilities.get(name)
             auto = capabilities.get(auto_name)
+            entry = self._numeric_entries[name]
+            unbounded = bool(prop and not prop.limits_known)
+            entry.setVisible(unbounded)
+            spin.setVisible(not unbounded)
+            self._unit_labels[spin].setText("ms" if name == "exposure" else
+                (prop.unit if prop and prop.unit else "dB" if name == "gain" else "fps"))
             enabled = bool(prop and prop.writable and not self.is_recording
                            and not (auto and auto.value != "Off"))
             spin.setEnabled(enabled)
-            slider.setEnabled(enabled)
+            entry.setEnabled(enabled)
+            slider.setEnabled(enabled and not unbounded)
+            tooltip = "Range not reported by the adapter; enter a numeric value." if unbounded else (
+                issues.get(name, "Not exposed by this camera connection.") if prop is None else "")
+            slider.setToolTip(tooltip)
+            entry.setToolTip(tooltip)
+            spin.setToolTip(tooltip)
+            if unbounded:
+                if not entry.hasFocus():
+                    entry.setText(f"{float(prop.value) / factor:g}")
+                continue
             if prop is None or spin.hasFocus() or slider.isSliderDown():
                 continue
             lo, hi, value = prop.minimum / factor, prop.maximum / factor, float(prop.value) / factor
@@ -301,22 +338,39 @@ class CameraControlPanel(QWidget):
             checkbox.setChecked(bool(prop and prop.value != "Off"))
             checkbox.setEnabled(bool(prop and prop.writable and not self.is_recording
                                      and {"Off", "Continuous"}.issubset(prop.choices)))
+            checkbox.setToolTip(issues.get(name, "Not exposed by this camera connection.") if prop is None else "")
             del blocker
         prop = capabilities.get("pixel_format")
         blocker = QSignalBlocker(self.pf_combo)
         choices = list(prop.choices) if prop else []
+        if prop and str(prop.value) not in choices:
+            choices.insert(0, str(prop.value))
         if choices != [self.pf_combo.itemText(i) for i in range(self.pf_combo.count())]:
             self.pf_combo.clear()
             self.pf_combo.addItems(choices)
         if prop:
             self.pf_combo.setCurrentText(str(prop.value))
         self.pf_combo.setEnabled(bool(prop and prop.writable and not self.is_recording))
+        self.pf_combo.setToolTip(issues.get("pixel_format", "Not exposed by this camera connection.") if prop is None else "")
         del blocker
 
     def _show_properties(self):
         if self.controller is not None and not self.is_recording:
             from ui.camera_properties_dialog import CameraPropertiesDialog
             CameraPropertiesDialog(self).exec_()
+
+    def _set_numeric_entry(self, name):
+        entry = self._numeric_entries[name]
+        if not entry.isEnabled() or not entry.isVisible():
+            return
+        try:
+            value = float(entry.text())
+            if not math.isfinite(value):
+                raise ValueError()
+        except ValueError:
+            entry.setToolTip("Enter a finite number.")
+            return
+        self._set_value(name, value * (1000 if name == "exposure" else 1))
 
     def _set_value(self, name, value):
         if self.controller is not None and not self.is_recording:

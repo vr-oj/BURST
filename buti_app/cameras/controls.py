@@ -16,10 +16,17 @@ class CameraControl:
     increment: float = 0
     choices: tuple[str, ...] = ()
     writable: bool = True
+    unit: str = ""
+    value_type: str = "float"
+    limits_known: bool = True
+    requires_stop: bool = False
 
 
 class CameraController:
-    """Exposure is µs, gain is dB, frame rate is Hz. Missing keys are unsupported.
+    """Exposure is µs, frame rate is Hz; gain uses its reported unit (legacy dB).
+
+    Missing keys are unsupported. limits_known=False permits numeric entry
+    without claiming a hardware range.
 
     Immutable snapshots never contain SDK objects. Writes are serviced in the
     acquisition worker; closing rejects pending commands before native cleanup.

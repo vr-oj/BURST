@@ -99,8 +99,13 @@ class MicroManagerClient:
             raise RuntimeError(response["error"])
         return response["result"]
 
-    def close(self):
+    def close(self, abort=False):
         if self.process is not None:
+            if abort and self.process.poll() is None and not (os.name == "nt" and getattr(sys, "frozen", False)):
+                # A timed-out discovery must not spend another two seconds
+                # asking the same unresponsive native driver to stop.
+                self.process.kill()
+                self.process.wait(timeout=5)
             if self.process.poll() is None:
                 try:
                     self.connection.send(("close", ()))
@@ -128,8 +133,8 @@ class MicroManagerClient:
             self.stderr.close()
             self.stderr = None
 
-    def __exit__(self, *args):
-        self.close()
+    def __exit__(self, exc_type, *args):
+        self.close(abort=exc_type is not None)
 
 
 class MicroManagerService:
@@ -142,22 +147,35 @@ class MicroManagerService:
 
     def dispatch(self, method, args):
         from .micro_manager_backend import MicroManagerSession, MicroManagerControls
+        if method in {"inspect_installation", "discover_library"}:
+            from . import micro_manager_discovery
+            return getattr(micro_manager_discovery, method)(self.sdk, *args)
         if method == "probe":
             with MicroManagerSession(self.sdk, args[0]) as session:
                 result = {"cameras": list(session.core.getLoadedDevicesOfType(self.sdk.CameraDevice)),
                           "selected": session.camera, "version": session.core.getVersionInfo(),
                           "api": session.core.getAPIVersionInfo()}
                 result["modes"] = {}
+                result["controls"] = {}
+                if session.profile.get("bindings") or session.profile.get("timing"):
+                    # A mapping belongs to one camera, not other devices in a cfg.
+                    result["cameras"] = [session.camera]
                 for camera in result["cameras"]:
                     session.core.setCameraDevice(camera)
+                    session.camera = camera
+                    from .micro_manager_trigger import MicroManagerTrigger
+                    session.trigger = MicroManagerTrigger(session.core, camera, session.profile.get("timing"),
+                                                         session.profile.get("bindings"))
                     result["modes"][camera] = {"width": session.core.getImageWidth(),
                                                "height": session.core.getImageHeight()}
+                    result["controls"][camera] = MicroManagerControls(session).read_controls()
             return result
         if method == "open":
             self.session = MicroManagerSession(self.sdk, args[0])
             self.session.__enter__()
             self.adapter = MicroManagerControls(self.session)
-            fps_name = "mm:" + self.adapter.fps_property
+            self.session.trigger.preview()
+            fps_name = "fps"
             fps = self.adapter.read_controls().get(fps_name)
             if fps and fps.writable:
                 try:
@@ -169,13 +187,20 @@ class MicroManagerService:
         if method == "timing":
             from .trigger import verify_external_trigger
             source = args[0]
+            before = self.adapter.read_controls()
+            preserved = {name: before[name].value for name in ("pixel_format", "mm:Binning", "mmcore:Sensor ROI (x,y,width,height)")
+                         if name in before}
+            for name, auto in (("exposure", "auto_exposure"), ("gain", "auto_gain")):
+                if name in before and (auto not in before or before[auto].value == "Off"):
+                    preserved[name] = before[name].value
+            preserved.update({name: before[name].value for name in ("auto_exposure", "auto_gain") if name in before})
             self.session.stop()
             self.trigger_configuration = {}
             self.trigger_input = None
             core, camera = self.session.core, self.session.camera
             if source:
                 self.trigger_configuration, self.trigger_input = self.session.trigger.arm(source)
-                for name in ("Frame Rate Control Enabled", "AcquisitionFrameRateEnable"):
+                for name in (() if self.session.trigger.timing else ("Frame Rate Control Enabled", "AcquisitionFrameRateEnable")):
                     try:
                         if core.hasProperty(camera, name) and not core.isPropertyReadOnly(camera, name):
                             self.preview_rate_switches.setdefault(name, core.getProperty(camera, name))
@@ -188,6 +213,10 @@ class MicroManagerService:
                 for name, value in self.preview_rate_switches.items():
                     core.setProperty(camera, name, value)
                 self.preview_rate_switches.clear()
+            after = self.adapter.read_controls()
+            for name, value in preserved.items():
+                if name not in after or after[name].value != value:
+                    raise RuntimeError(f"Camera timing changed image setting '{name}'. BURST has not started the Arduino.")
             self.session.start()
             if source:
                 verify_external_trigger(lambda n: core.getProperty(camera, n), self.trigger_configuration)
@@ -197,6 +226,8 @@ class MicroManagerService:
                     "trigger_configuration": getattr(self, "trigger_configuration", {}),
                     "trigger_input": getattr(self, "trigger_input", None)}
         if method == "set":
+            if getattr(self, "trigger_configuration", {}):
+                raise RuntimeError("Stop recording before changing camera properties.")
             self.adapter.set_value(*args)
             return None
         if method == "next":
@@ -206,7 +237,19 @@ class MicroManagerService:
             if core.getRemainingImageCount():
                 import numpy as np
                 components, bit_depth = core.getNumberOfComponents(), core.getImageBitDepth()
-                return (np.array(core.popNextImage(), copy=True), components, bit_depth)
+                metadata = {}
+                if hasattr(self.sdk, "Metadata"):
+                    tags = self.sdk.Metadata()
+                    pixels = core.popNextImageMD(tags)
+                    for key in tags.GetKeys():
+                        try:
+                            metadata[str(key)] = tags.GetSingleTag(key).GetValue()
+                        except Exception:
+                            pass
+                else:
+                    pixels = core.popNextImage()
+                return (np.array(pixels, copy=True), components, bit_depth, {"micro_manager": metadata,
+                        "timestamp_semantics": "adapter_metadata_not_assumed_exposure_time"})
             if not core.isSequenceRunning():
                 raise RuntimeError("The camera stopped sequence acquisition.")
             return None

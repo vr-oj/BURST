@@ -79,11 +79,11 @@ class MMCoreCameraThread(TimingCameraThread):
                             last_frame = time.monotonic()
                         payload = client.request("next", timeout=10)
                         if payload is not None:
-                            frame, components, bit_depth = payload
+                            frame, components, bit_depth, metadata = payload
                             image, array = copy_mm_frame(frame, components, bit_depth)
                             last_frame = time.monotonic()
                             self.frame_ready.emit(image, FrameData.copy(frame if components == 1 else array,
-                                pixel_format=f"Mono{bit_depth}" if components == 1 else "RGB8"))
+                                pixel_format=f"Mono{bit_depth}" if components == 1 else "RGB8", metadata=metadata))
                         else:
                             if not source and time.monotonic() - last_frame > 5:
                                 raise RuntimeError("No images for five seconds. Check exposure, connection and configured trigger source. Use internal/free-running triggering for preview.")

@@ -3,7 +3,8 @@ import logging
 import os
 from pathlib import Path
 
-from .controls import CameraControl
+from .micro_manager_controls import MicroManagerControls
+from .micro_manager_profiles import normalize_profile, profile_key
 from .models import CameraDeviceInfo, CameraMode
 from .micro_manager_trigger import MicroManagerTrigger
 
@@ -19,14 +20,7 @@ def installation_candidates():
 
 
 def validate_profile(profile):
-    installation = Path(profile.get("installation", ""))
-    config = Path(profile.get("config", ""))
-    if not str(profile.get("installation", "")).strip() or not installation.is_dir():
-        raise ValueError("Select the Micro-Manager installation folder containing its device adapters.")
-    if not config.is_file() or config.suffix.lower() != ".cfg":
-        raise ValueError("Select an existing Micro-Manager hardware configuration (.cfg).")
-    return {"installation": str(installation.resolve()), "config": str(config.resolve()),
-            "camera": str(profile.get("camera", ""))}
+    return normalize_profile(profile)
 
 
 class MicroManagerSession:
@@ -45,7 +39,17 @@ class MicroManagerSession:
             self.core.setTimeoutMs(5000)
             self.core.setDeviceAdapterSearchPaths([self.profile["installation"]])
             try:
-                self.core.loadSystemConfiguration(self.profile["config"])
+                connection = self.profile.get("connection")
+                if connection:
+                    camera = self.profile["camera"]
+                    self.core.loadDevice(camera, connection["library"], connection["device"])
+                    for name, value in connection.get("pre_init", {}).items():
+                        if not self.core.isPropertyPreInit(camera, name):
+                            raise ValueError(f"'{name}' is no longer an initialization setting.")
+                        self.core.setProperty(camera, name, value)
+                    self.core.initializeDevice(camera)
+                else:
+                    self.core.loadSystemConfiguration(self.profile["config"])
             except Exception as exc:
                 raise RuntimeError(f"Could not load configuration. BURST uses {self.core.getAPIVersionInfo()}. "
                                    f"Check matching adapters and vendor dependencies. Driver message: {exc}") from exc
@@ -57,13 +61,16 @@ class MicroManagerSession:
                 raise RuntimeError("The configuration has no selected camera. Configure a camera in Micro-Manager first.")
             self.core.setCameraDevice(camera)
             self.camera = camera
-            self.trigger = MicroManagerTrigger(self.core, camera)
+            self.trigger = MicroManagerTrigger(self.core, camera, self.profile.get("timing"),
+                                               self.profile.get("bindings"))
             return self
         except Exception:
             self.close()
             raise
 
     def start(self):
+        from .micro_manager_controls import validate_layout
+        validate_layout(self.core)
         if self.core.getNumberOfCameraChannels() != 1:
             raise RuntimeError("Multi-channel camera configurations are not supported. Select a single camera channel.")
         self.core.clearCircularBuffer()
@@ -100,101 +107,6 @@ class MicroManagerSession:
         self.close()
 
 
-class MicroManagerControls:
-    def __init__(self, session):
-        self.session = session
-        self.core, self.camera = session.core, session.camera
-        self.fps_property = "AcquisitionFrameRate"
-        if session.trigger.library == "SpinnakerC":
-            self.fps_property = "Frame Rate"
-
-    def read_controls(self):
-        core, camera = self.core, self.camera
-        result = {}
-        for name in core.getDevicePropertyNames(camera):
-            try:
-                limited = core.hasPropertyLimits(camera, name)
-                result["mm:" + name] = CameraControl(
-                    core.getProperty(camera, name),
-                    core.getPropertyLowerLimit(camera, name) if limited else 0,
-                    core.getPropertyUpperLimit(camera, name) if limited else 0,
-                    choices=tuple(core.getAllowedPropertyValues(camera, name)),
-                    writable=not (core.isPropertyReadOnly(camera, name) or core.isPropertyPreInit(camera, name)))
-            except Exception as exc:
-                log.debug("Micro-Manager property %s unavailable: %s", name, exc)
-        # MMCore defines exposure in ms. Gain units and auto enums are adapter
-        # specific: expose their native properties instead of mislabelling dB.
-        exposure = result.get("mm:Exposure")
-        if exposure and exposure.maximum > exposure.minimum:
-            result["exposure"] = CameraControl(core.getExposure() * 1000,
-                exposure.minimum * 1000, exposure.maximum * 1000, writable=exposure.writable)
-        fps = result.get("mm:" + self.fps_property)
-        if fps and fps.maximum > fps.minimum:
-            try:
-                result["fps"] = CameraControl(float(fps.value), fps.minimum, fps.maximum, writable=fps.writable)
-            except ValueError:
-                pass
-        result["mmcore:Exposure (ms)"] = CameraControl(str(core.getExposure()))
-        try:
-            result["mmcore:Sensor ROI (x,y,width,height)"] = CameraControl(
-                ",".join(str(v) for v in core.getROI()))
-        except Exception:
-            pass
-        pixel = result.get("mm:PixelType")
-        if pixel:
-            result["pixel_format"] = CameraControl(pixel.value, choices=(str(pixel.value),), writable=False)
-        return result
-
-    def set_value(self, name, value):
-        control = self.read_controls().get(name)
-        if control is None or not control.writable:
-            raise RuntimeError("Property is read-only or requires configuration in Micro-Manager.")
-        if control.choices and str(value) not in control.choices:
-            raise ValueError("Choose one of the adapter's allowed values.")
-        if control.maximum > control.minimum and not control.minimum <= float(value) <= control.maximum:
-            raise ValueError(f"Value must be between {control.minimum:g} and {control.maximum:g}.")
-        running = self.session.acquiring
-        if running:
-            self.session.stop()
-        try:
-            if name == "exposure" or name == "mmcore:Exposure (ms)":
-                exposure = float(value) / 1000 if name == "exposure" else float(value)
-                if not 0 < exposure < float("inf"):
-                    raise ValueError("Exposure must be a finite positive number in milliseconds.")
-                self.core.setExposure(exposure)
-            elif name == "mmcore:Sensor ROI (x,y,width,height)":
-                roi = tuple(int(part.strip()) for part in str(value).split(","))
-                if len(roi) != 4 or any(v < 0 for v in roi):
-                    raise ValueError("Enter x,y,width,height; use 0,0,0,0 to restore the full sensor.")
-                if roi == (0, 0, 0, 0):
-                    self.core.clearROI()
-                elif roi[2] and roi[3]:
-                    self.core.setROI(*roi)
-                else:
-                    raise ValueError("Width and height must be positive.")
-            elif name == "fps":
-                self.core.setProperty(self.camera, self.fps_property, str(value))
-            else:
-                self.core.setProperty(self.camera, name.removeprefix("mm:"), str(value))
-            self.core.waitForDevice(self.camera)
-        finally:
-            if running:
-                self.session.start()
-
-    def read_diagnostics(self):
-        return {"backend": "Micro-Manager", "camera": self.camera,
-                "device_adapter": self.session.trigger.library,
-                "configuration": self.session.profile["config"],
-                "core_version": self.core.getVersionInfo(),
-                "adapter_api": self.core.getAPIVersionInfo(),
-                "image_width": self.core.getImageWidth(), "image_height": self.core.getImageHeight(),
-                "source_bit_depth": self.core.getImageBitDepth(),
-                "output": "8-bit mono or RGB; high-bit-depth mono uses fixed scaling",
-                "timing": "Configuration controls triggering; synchronization is not verified",
-                "properties": {key[3:]: value.value for key, value in self.read_controls().items()
-                               if key.startswith("mm:")}}
-
-
 class MicroManagerBackend:
     key = "micromanager"
     module_name = "pymmcore"
@@ -208,12 +120,15 @@ class MicroManagerBackend:
         # not initialize a complete microscope during automatic device refresh.
         devices = []
         for profile in self.profiles:
-            if not isinstance(profile, dict) or not all(profile.get(k) for k in ("installation", "config", "camera")):
+            if not isinstance(profile, dict) or not profile.get("installation") or not profile.get("camera") or not (profile.get("config") or profile.get("connection")):
                 continue
-            key = f"{profile['installation']}::{profile['config']}::{profile['camera']}"
+            key = profile_key(profile)
+            connection = profile.get("connection", {})
+            label = profile.get("display_name", profile["camera"])
             devices.append(CameraDeviceInfo(self.key, key,
-                f"{profile['camera']} — Micro-Manager ({Path(profile['config']).stem})",
-                native_info=dict(profile)))
+                f"{label} — Micro-Manager ({connection.get('library') or Path(profile.get('config', '')).stem})",
+                serial=profile.get("serial"), native_info=dict(profile),
+                vendor=profile.get("vendor", ""), physical_id=profile.get("physical_id")))
         return devices
 
     def list_modes(self, device):

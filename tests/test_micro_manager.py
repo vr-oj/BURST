@@ -137,7 +137,8 @@ class MicroManagerTests(unittest.TestCase):
             controls = adapter.read_controls()
             self.assertEqual(controls["exposure"].value, 10000)
             self.assertEqual(controls["fps"].value, 10)
-            self.assertNotIn("gain", controls)  # Do not claim unknown gain units are dB.
+            self.assertEqual(controls["gain"].unit, "camera units")
+            self.assertFalse(controls["gain"].limits_known)
             self.assertEqual(controls["mm:Gain"].value, "2")
             self.assertFalse(controls["mm:Serial"].writable)
             self.assertFalse(controls["mm:SetupOnly"].writable)

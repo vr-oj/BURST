@@ -33,8 +33,10 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
 ### High-Speed Camera Preview & Control
 - Automatically lists IC4, FLIR/Spinnaker, generic USB/OpenCV, and installed GenTL cameras together.
 - Add Micro-Manager cameras through **Acquisition → Advanced → Micro-Manager Camera Setup…**.
-  Select the installation and a saved `.cfg`, load it, add a camera, and save.
-  Adapter-specific controls are available through **Camera properties…** during preview.
+  Use **Find cameras**, or load a saved `.cfg`, add a camera, and save.
+  Compatible cameras use the normal image controls; **Resolution** offers reported
+  binning and sensor regions. Additional controls are under **Camera properties…**.
+  Optional camera mappings can be saved and shared from setup without editing code.
   Compatible Micro-Manager adapters and vendor drivers must be installed; users do
   not need to copy files into BURST's installation folder. See [camera setup](buti_app/docs/cameras.md).
 - Supports additional installed SDK adapters without changing the camera UI.

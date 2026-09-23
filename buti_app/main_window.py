@@ -334,6 +334,7 @@ class MainWindow(QMainWindow):
         self.resolution_combo.currentIndexChanged.connect(
             self._on_camera_configuration_changed
         )
+        self.resolution_combo.activated.connect(self._select_micro_manager_size)
 
         self.btn_start_camera = QPushButton("Start Camera", self)
         self.btn_start_camera.setProperty("cssClass", "primary")
@@ -674,9 +675,50 @@ class MainWindow(QMainWindow):
         device = self.device_combo.currentData()
         if (device is not None and device.backend == "micromanager"
                 and isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
-            self.resolution_combo.setItemText(self.resolution_combo.currentIndex(),
-                                             f"{width}×{height} (Configuration)")
-            self.resolution_combo.setToolTip("Uses the Micro-Manager configuration. Change sensor ROI or binning in Camera properties.")
+            controller = self.camera_thread.controller if self.camera_thread else None
+            controls = controller.capabilities() if controller else {}
+            binning = controls.get("mm:Binning")
+            roi = controls.get("mmcore:Sensor ROI (x,y,width,height)")
+            options = [(f"{width}×{height} (Current)", (width, height, "Configuration"))]
+            if roi and roi.writable:
+                options += [("Full sensor", {"roi": "0,0,0,0"}), ("Custom sensor region…", {"roi": "custom"})]
+            if binning and binning.writable:
+                options += [(f"Binning {value}", {"binning": value}) for value in binning.choices]
+            if options != getattr(self, "_mm_size_options", None) or self.resolution_combo.itemData(0) != options[0][1]:
+                self._mm_size_options = options
+                blocked = self.resolution_combo.blockSignals(True)
+                self.resolution_combo.clear()
+                for label, value in options:
+                    self.resolution_combo.addItem(label, value)
+                self.resolution_combo.blockSignals(blocked)
+            self.resolution_combo.setEnabled(self._recording_state == "idle" and not self._camera_armed
+                                             and not self._timing_transition and controller is not None)
+            self.resolution_combo.setToolTip("Camera acquisition size. Binning and sensor regions change images received from the camera; recording crop only changes saved images.")
+
+    def _select_micro_manager_size(self, index):
+        action = self.resolution_combo.itemData(index)
+        if not isinstance(action, dict):
+            return
+        self.resolution_combo.setCurrentIndex(0)
+        if (self.camera_thread is None or self._recording_state != "idle"
+                or self._camera_armed or self._timing_transition):
+            return
+        controller = self.camera_thread.controller
+        if "binning" in action:
+            controller.set_value("mm:Binning", action["binning"])
+        else:
+            value = action["roi"]
+            if value == "custom":
+                from ui.micro_manager_sensor import SensorROIDialog
+                control = controller.capabilities().get("mmcore:Sensor ROI (x,y,width,height)")
+                if control is None:
+                    return
+                dialog = SensorROIDialog(tuple(int(v) for v in str(control.value).split(",")), self)
+                if dialog.exec_() != QDialog.Accepted:
+                    return
+                value = dialog.value()
+            controller.set_value("mmcore:Sensor ROI (x,y,width,height)", value)
+        self._camera_rate_monitor.reset()
 
     @pyqtSlot(QImage, object)
     def _update_camera_info(self, image: QImage, raw):
@@ -1700,6 +1742,7 @@ class MainWindow(QMainWindow):
             self._timing_transition = "arming"
             self.camera_control_panel.set_recording_state(True)
             self.camera_control_panel.setEnabled(False)
+            self.resolution_combo.setEnabled(False)
             self.camera_info_panel.set_transform_controls_enabled(False)
             self.btn_start_camera.setEnabled(False)
             self._refresh_recording_button_states()

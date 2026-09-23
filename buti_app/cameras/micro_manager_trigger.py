@@ -13,12 +13,29 @@ TRIGGER_PROPERTIES = {
 
 
 class MicroManagerTrigger:
-    def __init__(self, core, camera):
+    def __init__(self, core, camera, timing=None, bindings=None):
         self.core, self.camera = core, camera
+        self.timing = timing or {}
+        if self.timing:
+            names = set(core.getDevicePropertyNames(camera))
+            protected = {"Exposure", "ExposureTime", "Exposure Time", "Gain", "PixelType", "Pixel Format", "PixelFormat", "Binning",
+                         "Width", "Height", "OffsetX", "OffsetY", "ExposureAuto", "Exposure Auto", "Auto Exposure",
+                         "AutoExposure", "GainAuto", "Gain Auto", "Auto Gain", "AutoGain"}
+            protected.update(b["property"] for role, b in (bindings or {}).items()
+                             if role in {"exposure", "gain", "pixel_format", "auto_exposure", "auto_gain"})
+            for assignments in self.timing.values():
+                for item in assignments:
+                    name = item["property"]
+                    if name not in names or core.isPropertyPreInit(camera, name) or name in protected:
+                        raise ValueError(f"Timing mapping '{name}' is unavailable, setup-only, or changes image settings.")
+                    choices = tuple(core.getAllowedPropertyValues(camera, name))
+                    if choices and item["value"] not in choices:
+                        raise ValueError(f"Timing value '{item['value']}' is not offered for '{name}'.")
         self.library = str(core.getDeviceLibrary(camera))
         names = set(core.getDevicePropertyNames(camera))
-        self.properties = {key: next((name for name in aliases if name in names), None)
-                           for key, aliases in TRIGGER_PROPERTIES.items()}
+        matches = {key: [name for name in aliases if name in names] for key, aliases in TRIGGER_PROPERTIES.items()}
+        self.ambiguous = [key for key, values in matches.items() if len(values) > 1]
+        self.properties = {key: values[0] if len(values) == 1 else None for key, values in matches.items()}
         # TIScam implements get/setExternalTrigger through Internal/External.
         # Do not infer the same semantics for an unrelated adapter's enum.
         # https://github.com/micro-manager/mmCoreAndDevices/blob/main/DeviceAdapters/TISCam/TIScamera.cpp
@@ -36,6 +53,11 @@ class MicroManagerTrigger:
         self.core.setProperty(self.camera, self.properties[key], value)
 
     def preview(self):
+        if self.timing:
+            self._apply_mapping("preview")
+            return
+        if "TriggerMode" in self.ambiguous:
+            raise RuntimeError("Multiple trigger-mode properties; choose them in Advanced camera mapping.")
         if not self.properties["TriggerMode"]:
             return
         current, choices = self.read("TriggerMode"), self.choices("TriggerMode")
@@ -53,6 +75,14 @@ class MicroManagerTrigger:
             {self.properties["TriggerMode"]: value})
 
     def arm(self, source):
+        if self.timing:
+            try:
+                configured = self._apply_mapping("external")
+                return configured, {"name": "User-configured external input", "selection": "saved_mapping",
+                                    "adapter": self.library, "physical_timing": "not_verified"}
+            except Exception:
+                self._apply_mapping("preview")
+                raise
         if self.tis_external:
             if source != AUTO_TRIGGER:
                 raise RuntimeError("TIScam uses the camera's configured external input; "
@@ -70,7 +100,7 @@ class MicroManagerTrigger:
             raise RuntimeError(
                 f"{self.library}: BURST cannot yet configure external triggering through this "
                 f"Micro-Manager adapter (controls not exposed: {', '.join(missing)}). "
-                "This does not mean the camera lacks triggering. Use a supported camera connection "
+                "This does not mean the camera lacks triggering. Configure Advanced camera mapping or use a supported camera connection "
                 "or explicitly choose approximate software pairing under Acquisition > Advanced. "
                 "BURST has not started the Arduino.")
         configured = configure_external_trigger(
@@ -86,3 +116,13 @@ class MicroManagerTrigger:
         # any resulting preview images are discarded when the buffer is cleared.
         if self.tis_external and self.read("TriggerMode") == "External":
             self.preview()
+
+    def _apply_mapping(self, mode):
+        expected = {}
+        for item in self.timing[mode]:
+            name, value = item["property"], item["value"]
+            if str(self.core.getProperty(self.camera, name)) != value:
+                self.core.setProperty(self.camera, name, value)
+            expected[name] = value
+        verify_external_trigger(lambda name: self.core.getProperty(self.camera, name), expected)
+        return expected

@@ -361,6 +361,7 @@ class RecordingManager(QObject):
                 pixel_metadata = {"native_depth_preserved": raw.native_depth_preserved,
                                   "pixel_format": raw.pixel_format,
                                   "camera_frame_id": raw.camera_frame_id,
+                                  "camera_metadata": raw.metadata,
                                   "camera_received_monotonic": raw.received_monotonic}
             if self.tif_writer is None:
                 self.tif_writer = tifffile.TiffWriter(self._tiff_path, bigtiff=True)

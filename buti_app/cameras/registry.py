@@ -70,10 +70,12 @@ class CameraRegistry:
         for key, backend in ordered:
             try:
                 for device in backend.discover():
-                    if device.physical_id and device.physical_id in identities:
+                    # Explicitly saved MM profiles remain selectable as an
+                    # alternative route to a camera also offered by its SDK.
+                    if key != "micromanager" and device.physical_id and device.physical_id in identities:
                         log.info("Skipping duplicate camera %s", device.display_name)
                         continue
-                    if device.physical_id:
+                    if key != "micromanager" and device.physical_id:
                         identities.add(device.physical_id)
                     devices.append(device)
                     log.info("Discovered %s camera: %s (id=%s, serial=%s)",

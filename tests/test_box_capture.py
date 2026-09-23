@@ -257,3 +257,18 @@ class BoxCaptureTests(unittest.TestCase):
             self.assertEqual(outputs[0][2].frames_written, 1)
             with tifffile.TiffFile(outputs[0][1]) as stack:
                 self.assertEqual(json.loads(stack.pages[0].description)["pixels"]["camera_frame_id"], 200)
+
+    def test_mm_metadata_is_diagnostic_not_a_hardware_frame_id(self):
+        with tempfile.TemporaryDirectory() as folder:
+            recorder, outputs = self.recorder(folder, timing="external_trigger")
+            image = QImage(2, 2, QImage.Format_Grayscale8)
+            for i in (1, 2):
+                recorder.append_force(i / 10, i, 0, 0, i)
+                recorder.append_frame(image, FrameData.copy(np.zeros((2, 2), np.uint8),
+                    metadata={"micro_manager": {"ImageNumber": "99", "ElapsedTime-ms": "100"}}))
+            recorder.stop_recording()
+            self.assertEqual(outputs[0][2].frames_written, 2)
+            with tifffile.TiffFile(outputs[0][1]) as stack:
+                pixels = json.loads(stack.pages[0].description)["pixels"]
+                self.assertIsNone(pixels["camera_frame_id"])
+                self.assertEqual(pixels["camera_metadata"]["micro_manager"]["ImageNumber"], "99")

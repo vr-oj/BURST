@@ -12,7 +12,7 @@ startup dialogs.
 | Spinnaker | Teledyne FLIR Spinnaker runtime/drivers and its matching `PySpin` wheel |
 | Generic USB / OpenCV | A Windows UVC driver and `opencv-python` |
 | Generic GenTL | A vendor's 64-bit GenTL producer (`.cti`), its runtime/drivers, and `harvesters` / `genicam` |
-| Micro-Manager | `pymmcore`, compatible 64-bit Micro-Manager device adapters, vendor drivers, and a saved camera `.cfg` |
+| Micro-Manager | `pymmcore`, compatible 64-bit Micro-Manager device adapters and vendor drivers; automatic camera setup where supported, otherwise a saved `.cfg` |
 | Installed SDK adapter | A Python package registered in `burst.camera_backends`, plus that adapter's SDK |
 
 The public GenTL bridge packages are included in the source requirements, but all
@@ -24,25 +24,35 @@ backend can use it; otherwise an installed adapter implements the contract below
 
 1. Install compatible **64-bit Micro-Manager** and the vendor drivers required by
    its camera adapter. Confirm your camera works in Micro-Manager's Live view.
-2. Save a camera hardware configuration (`.cfg`) in a permanent user folder.
-   Prefer a camera-only configuration: loading a configuration initializes **all**
-   devices named in it, including other microscope hardware. Close Micro-Manager
-   and other camera programs before using the camera in BURST.
-3. In BURST open **Acquisition → Advanced → Micro-Manager Camera Setup…**. Browse to the
-   Micro-Manager folder containing its device adapters and your `.cfg` file.
-4. Choose **Load configuration and find cameras**. This runs outside the GUI
-   thread in an isolated helper process, validates configuration loading and lists its cameras, then releases
-   them. It does not certify image acquisition or timing. Select a camera, click
+2. Close Micro-Manager and other camera programs. In BURST open
+   **Acquisition → Advanced → Micro-Manager Camera Setup…**. The installation from
+   a saved connection is reused; BURST also looks in standard installation folders.
+   Select another folder if needed and choose **Find cameras**.
+3. Discovery checks adapters in separate helper processes, with a ten-second
+   request budget per adapter and a sixty-second search budget (plus process cleanup).
+   **Cancel search** keeps results already found. SpinnakerC model/serial choices
+   and adapters implementing device detection can identify cameras automatically.
+   No configuration values, serial numbers or hub connections are guessed.
+   Missing SDKs, adapter/API errors and initialization requirements appear in setup.
+   An installation is usable only when its adapter actually loads with BURST's MMCore.
+4. If your camera needs additional setup, native dialogs or other devices, save a
+   camera hardware configuration (`.cfg`) from Micro-Manager in a permanent user
+   folder. Prefer a camera-only configuration: loading it initializes **all** devices
+   named in it. Select that file and **Load configuration and find cameras**.
+   Discovery/configuration loading does not certify image acquisition or timing. Select a camera, click
    **Add selected camera**, then **Save**. Multiple configurations can be saved;
    the same dialog removes saved entries without deleting any files.
 5. Select the saved Micro-Manager entry from **Camera Device** and start the preview.
    The resolution selector shows the dimensions read during setup, or says that
    resolution will be read on start for older saved profiles. It updates to the
-   opened camera's actual dimensions. Geometry and pixel type initially come from
-   the configuration. Let delivery stabilize before recording. The preview rate
+   opened camera's actual dimensions. During preview **Resolution** also offers
+   reported binning choices, **Full sensor**, and **Custom sensor region…** where
+   available. These affect camera acquisition; the separate recording crop only
+   changes saved images. Geometry and pixel type initially come from the connection.
+   Let delivery stabilize before recording. The preview rate
    readiness check and recording lag guard apply.
 
-BURST stores configuration **paths** in per-user settings. It does not copy or
+BURST stores discovered connections, mappings and configuration **paths** in per-user settings. It does not copy or
 modify the `.cfg`; leave it and its referenced resources in place. Saved entries
 are candidates, not a claim that the camera is connected. Refreshing devices does
 not load a Micro-Manager configuration or initialize microscope hardware.
@@ -64,10 +74,34 @@ accepts `x,y,width,height` (use `0,0,0,0` to restore the full sensor). Propertie
 be rejected by a particular adapter; the dialog shows errors and applied readback.
 Changes briefly stop/restart acquisition, reset rate readiness, and last for this
 session. Save persistent settings through Micro-Manager's configuration workflow.
-Controls lock during recording. Gain units and automatic-control enums are not
-guessed: when they are not portable, use the native property panel. The normal
-exposure/frame-rate sliders appear only when the corresponding known property
-provides usable limits.
+Controls lock during recording. MMCore's standard exposure interface supplies
+milliseconds to the existing exposure UI. Documented aliases map gain, automatic
+modes, FPS and pixel format into the normal controls. Ambiguous names are left
+unmapped with an explanation. Gain uses documented units (SpinnakerC: dB), or
+**camera units** when unknown. Writable numeric controls without reported limits
+use text entry and a disabled slider. BURST does not invent a camera range.
+Controls locked only during streaming can be changed by briefly stopping preview;
+permanently read-only and initialization properties stay disabled. Applied values
+come from camera readback, including quantization. Unsupported layouts are rejected
+and the previous setting/preview is restored; failed restoration is reported.
+
+**Advanced camera mapping…** in setup is optional. Select a saved camera, choose
+existing properties and their native units, and assign native automatic/manual
+enum values. Two timing tabs support ordered property/value assignments for preview
+and external triggering. Leave both empty for automatic timing setup. These contain
+data only, never scripts. Timing mappings must not change mapped image controls.
+BURST validates the connected adapter's property names and values before using a
+mapping, and checks readback again when arming. Invalid mappings cannot start the box.
+
+Saved mappings take precedence over documented aliases. **Export selected profile…**
+and **Import camera profile…** share the connection/mapping as JSON. The receiving
+lab still needs compatible drivers/adapters and must select its own installation,
+configuration path and camera serial. After import, verify paths, load and add the
+camera, then Save. Advanced mapping can repair a stale imported or saved mapping.
+Legacy profiles remain readable. Nothing needs copying into Program Files/BURST.
+Explicitly saved MM entries remain selectable even when a native SDK also lists
+that camera. Discovery deduplicates only by reliable vendor/serial identity or the
+same connection; generic USB entries have no such identity.
 
 The source/build requirements pin `pymmcore==12.5.0.75.0` (MMCore 12.5.0,
 device API **75**, module API **10**). Micro-Manager adapters must match that API
@@ -85,7 +119,7 @@ detects reported overflow, and copies images
 before native buffers can be reused. Supported images are single-channel 8/16-bit
 monochrome and packed 32-bit RGB. High-bit-depth monochrome is scaled for the 8-bit
 preview while the original source pixels are preserved separately for TIFF recording.
-Float, RGB64 and multi-camera/channel payloads fail with an explanation instead of
+Float, RGB64, packed monochrome and multi-camera/channel payloads fail with an explanation instead of
 being interpreted incorrectly.
 
 Software pairing uses Off/Internal triggering when the adapter exposes a recognized
@@ -273,7 +307,7 @@ camera and resolution, and start the preview. Close other camera applications fi
 | IC4 camera | BURST with IC4 support plus the compatible vendor runtime/drivers. |
 | FLIR/Spinnaker camera | A Spinnaker-enabled BURST build plus the matching Spinnaker runtime/drivers. |
 | Other GenTL camera | BURST with its GenTL bridge plus a compatible vendor GenTL producer and drivers. The installer must register its producer path; otherwise support must configure it once. |
-| Micro-Manager camera | BURST with its Micro-Manager bridge, matching 64-bit device adapters and vendor drivers; select a saved `.cfg` in Camera Setup. |
+| Micro-Manager camera | BURST with its Micro-Manager bridge, matching 64-bit device adapters and vendor drivers; Find cameras or select a saved `.cfg` in Camera Setup. |
 | Other proprietary SDK | A BURST release containing an adapter for that SDK, plus its required runtime/drivers. Installing an arbitrary SDK alone cannot add support. |
 
 The current BURST installer does not install vendor runtimes or provide an SDK
@@ -351,6 +385,11 @@ guide for remaining detection limits and required physical timing validation.
 TIFF metadata identifies the force sample associated with each saved page and the
 saved image index. Playback uses this association for sparse recordings. Host
 receipt/processing timestamps are diagnostic only; they are not exposure timestamps.
+MMCore's image tags are retained under `pixels.camera_metadata.micro_manager` in
+TIFF metadata. `ImageNumber`, `ElapsedTime-ms` and `TimeReceivedByCore` are **not**
+promoted to hardware frame IDs or exposure timestamps. The genuine hardware ID field
+remains empty when the adapter does not supply one. Matching counts are association
+checks, not physical timing certification.
 Owned monochrome 8/16-bit data from IC4, Micro-Manager, GenTL and Spinnaker are recorded
 independently of the 8-bit preview. Packed Spinnaker monochrome formats use the SDK's
 Mono16 conversion. Color conversion paths may still save RGB8; per-page metadata
@@ -361,6 +400,9 @@ use the preview fallback and are labelled accordingly.
 
 Mocked tests cover discovery, missing SDKs, selection, capabilities, frame lifetime,
 failure cleanup, ROI/mirroring, and TIFF/force recording. Before a hardware release:
+
+See [recorded Micro-Manager validation](micro-manager-validation.md) for tested
+camera/adapter combinations and outstanding physical tests.
 
 - IC4: compare resolution/pixel formats, defaults, auto exposure/gain, frame rate,
   image intensity and long recordings against the prior release.

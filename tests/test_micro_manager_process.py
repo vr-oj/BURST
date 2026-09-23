@@ -68,6 +68,22 @@ class MicroManagerProcessTests(unittest.TestCase):
                 self.assertIsNotNone(payload)
                 self.assertEqual(payload[0].ndim, 2)
                 self.assertEqual(payload[1], 1)
+                self.assertIn("ImageNumber", payload[3]["micro_manager"])
+                client.request("set", "mmcore:Sensor ROI (x,y,width,height)", "0,0,64,32")
+                client.request("set", "pixel_format", "16bit")
+                end = time.monotonic() + 5
+                resized = None
+                while resized is None and time.monotonic() < end:
+                    resized = client.request("next")
+                    time.sleep(.005)
+                self.assertEqual(resized[0].shape, (32, 64))
+                self.assertEqual(str(resized[0].dtype), "uint16")
+                with self.assertRaisesRegex(RuntimeError, "8/16-bit"):
+                    client.request("set", "pixel_format", "32bit")
+                self.assertEqual(client.request("snapshot")["controls"]["pixel_format"].value, "16bit")
+                client.request("set", "mmcore:Sensor ROI (x,y,width,height)", "0,0,0,0")
+                restored = client.request("snapshot")["diagnostics"]
+                self.assertGreater(restored["image_width"], 64)
 
 
 if __name__ == "__main__":
