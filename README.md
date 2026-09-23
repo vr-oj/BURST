@@ -10,9 +10,9 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
 1. **Connect BUTI Arduino Box** – Select the BUTI Arduino Box COM port and click **Connect BUTI Arduino Box**.
 2. **Set Up Camera** – Choose the camera and resolution from the main toolbar, then click **Start Camera**.
 3. **Adjust Exposure/Gain** – Use the always-visible **Camera Settings** card above the live camera to fine-tune the full-width controls.
-4. **Zero BURST** – Ensure the force reading is zeroed before recording.
+4. **Prepare the Arduino box** – Connect its trigger cable to the camera, choose the box's experiment/Capture settings, and use **ZERO on the box** before each recording.
 5. **Choose a Session** – Select or create the session that will contain its Run folders.
-6. **Start Recording** – Click the prominent red **Start Recording** button in the BUTI status strip to begin acquisition. Exposure timing is not verified.
+6. **Start Recording** – BURST switches from preview to Arduino triggering, verifies the camera settings, prepares the files, and starts the box. Failed arming does not start recording or silently switch to software pairing.
 7. **Finish Recording** – BURST stops automatically when device data ends, plays the selected completion cue, and shows one window with recording-integrity details, paired-file naming, folder access, and an optional **Open in BRAID** action when BRAID is installed.
 8. **Playback & Export** – Open **Playback** and select the TIFF; BURST finds its paired CSV automatically so you can review the stack, overlay force data, and export frames.
 
@@ -21,8 +21,9 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
 
 ### Real-Time Force + Video Recording
 - The BUTI Arduino Box acts as the master clock, generating trigger pulses (`CamTrig`) for every frame.
-- A matching serial message (`frame_index, time_s, force_value`) is emitted by the BUTI Arduino Box immediately after each pulse.
-- BURST saves every force sample and follows box trigger-counter changes for image selection. This is software association, not verified exposure synchronization. In software mode the first row establishes the counter baseline. Arduino trigger mode instead requires the box counter to be zeroed before recording.
+- The box sends a serial row on every sample, including samples with no requested image. Its frame counter increments when it emits a trigger.
+- BURST saves every force sample and associates triggered images with the corresponding counter changes, even when image and serial data arrive in either order. Preview returns after recording without resetting exposure/gain.
+- Cameras without supported triggering can use **Acquisition → Advanced → Allow approximate software pairing**. This is an explicit choice for the selected camera/session and is labelled in the recording. Equal counts alone do not certify physical exposure-to-force timing; see the setup-validation guidance.
 
 ### Live Force Plotting
 - Streams force data from the BUTI Arduino Box at 460800 baud and renders a live trace with frame index, elapsed time, and force annotations.
@@ -31,7 +32,7 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
 
 ### High-Speed Camera Preview & Control
 - Automatically lists IC4, FLIR/Spinnaker, generic USB/OpenCV, and installed GenTL cameras together.
-- Add Micro-Manager cameras through **Acquisition → Micro-Manager Camera Setup…**.
+- Add Micro-Manager cameras through **Acquisition → Advanced → Micro-Manager Camera Setup…**.
   Select the installation and a saved `.cfg`, load it, add a camera, and save.
   Adapter-specific controls are available through **Camera properties…** during preview.
   Compatible Micro-Manager adapters and vendor drivers must be installed; users do

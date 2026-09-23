@@ -54,7 +54,7 @@ class RecordingCompletionDialog(QDialog):
             (
                 f"Readable CSV and TIFF data were preserved in {run_folder_name}."
                 if recovered
-                else f"The CSV and TIFF were saved in {run_folder_name}. Timing synchronization is not verified."
+                else f"The CSV and TIFF were saved in {run_folder_name}."
             )
         )
         if not has_images:
@@ -65,11 +65,11 @@ class RecordingCompletionDialog(QDialog):
         if summary is not None:
             layout.addWidget(self._build_integrity_card(summary))
             if summary.timing_mode == "external_trigger":
-                note = QLabel("External trigger settings were applied. Event-count checks do not verify electrical exposure-to-force timing; validate the connected setup before relying on precise timing.")
+                note = QLabel("Arduino-triggered capture. Image/data checks are reported above; physical exposure timing is not measured by BURST.")
                 note.setWordWrap(True)
                 layout.addWidget(note)
             elif summary.capture_mode == "box":
-                note = QLabel("The first force row establishes the box counter baseline and is not assigned an image. Images use software arrival-order pairing; exposure timing is not verified.")
+                note = QLabel("Approximate software pairing: image exposure times may differ from the associated force measurements.")
                 note.setWordWrap(True)
                 layout.addWidget(note)
 

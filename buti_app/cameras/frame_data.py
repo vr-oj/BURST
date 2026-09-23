@@ -10,6 +10,7 @@ class FrameData:
     received_monotonic: float = field(default_factory=time.monotonic)
     pixel_format: str = "unknown"
     native_depth_preserved: bool = True
+    camera_frame_id: int | None = None
 
     @classmethod
     def copy(cls, pixels, **kwargs):

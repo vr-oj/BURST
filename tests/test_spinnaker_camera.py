@@ -57,6 +57,8 @@ class Image:
         return self.name
     def GetNDArray(self):
         return self.data
+    def GetFrameID(self):
+        return 1
     def Release(self):
         self.events.append("image-release")
         self.data[:] = 0  # Simulate immediate native-buffer reuse.
@@ -93,12 +95,43 @@ def fake_sdk():
         CStringPtr=lambda n: n, CFloatPtr=lambda n: n, CIntegerPtr=lambda n: n,
         CEnumerationPtr=lambda n: n, CBooleanPtr=lambda n: n, CEnumEntryPtr=lambda n: n,
         IsReadable=lambda n: n is not None, IsWritable=lambda n: bool(n and getattr(n, "writable", False)),
+        IsAvailable=lambda n: n is not None,
         ImageProcessor=Mock, PixelFormat_RGB8=1, PixelFormat_Mono8=2,
         SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR=1, SPINNAKER_ERR_TIMEOUT=-1011)
     return sdk, camera, system, image, events
 
 
 class SpinnakerTests(unittest.TestCase):
+    def test_preview_arm_and_restore_acquisition(self):
+        sdk, camera, _, _, events = fake_sdk()
+        original = camera.GetNodeMap().GetNode
+        extra = {"TriggerSource": Node("Software", choices=("Software", "Line0")),
+                 "TriggerSelector": Node("FrameStart", choices=("FrameStart",)),
+                 "TriggerActivation": Node("RisingEdge", choices=("RisingEdge",)),
+                 "AcquisitionFrameRateEnable": Node(True)}
+        camera.GetNodeMap().GetNode = lambda name: extra.get(name) or original(name)
+        thread = SpinnakerCameraThread(sdk=sdk)
+        thread.set_device_info("flir-usb-1234")
+        thread.grabber_ready.connect(lambda: thread.request_timing("auto"))
+        modes, errors = [], []
+        def ready(armed):
+            modes.append(armed)
+            if armed:
+                self.assertEqual(extra["TriggerSource"].value, "Line0")
+                self.assertFalse(extra["AcquisitionFrameRateEnable"].value)
+                thread.request_timing("")
+            else:
+                thread.stop()
+        thread.timing_ready.connect(ready)
+        thread.error.connect(lambda *args: errors.append(args))
+        thread.run()
+        self.assertEqual(errors, [])
+        self.assertEqual(modes, [True, False])
+        self.assertTrue(extra["AcquisitionFrameRateEnable"].value)
+        self.assertEqual(original("TriggerMode").value, "Off")
+        self.assertEqual(events.count("begin"), 3)
+        self.assertEqual(events.count("end"), 3)
+
     def test_rate_clamping_is_reported(self):
         sdk, camera, _, _, _ = fake_sdk()
         node = Node(5, 1, 6.83)

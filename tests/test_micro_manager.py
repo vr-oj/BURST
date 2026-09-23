@@ -220,6 +220,30 @@ class MicroManagerTests(unittest.TestCase):
                 core.stopSequenceAcquisition.assert_called_once()
                 core.unloadAllDevices.assert_called_once()
 
+    def test_preview_arm_and_restore_preserve_controls_and_flush_buffer(self):
+        for name, value in {"TriggerMode": "Off", "TriggerSelector": "FrameStart",
+                            "TriggerSource": "Line0", "TriggerActivation": "RisingEdge",
+                            "AcquisitionFrameRateEnable": "1"}.items():
+            self.core.setProperty("Camera", name, value)
+        self.core.hasProperty.side_effect = lambda camera, name: name == "AcquisitionFrameRateEnable"
+        self.core.getAllowedPropertyValues.side_effect = lambda camera, name: {
+            "TriggerMode": ("On", "Off"), "TriggerSource": ("Software", "Line0")}.get(name, ())
+        service = MicroManagerService(self.sdk)
+        try:
+            self.assertEqual(service.dispatch("open", (self.profile, ""))["trigger_configuration"], {})
+            service.dispatch("set", ("exposure", 23000))
+            armed = service.dispatch("timing", ("auto",))
+            self.assertEqual(armed["trigger_configuration"]["TriggerMode"], "On")
+            self.assertEqual(self.core.getProperty("Camera", "AcquisitionFrameRateEnable"), "0")
+            restored = service.dispatch("timing", ("",))
+            self.assertEqual(restored["trigger_configuration"], {})
+            self.assertEqual(self.core.getProperty("Camera", "TriggerMode"), "Off")
+            self.assertEqual(self.core.getExposure(), 23)
+            self.assertEqual(self.core.getProperty("Camera", "AcquisitionFrameRateEnable"), "1")
+            self.assertEqual(self.core.clearCircularBuffer.call_count, 4)
+        finally:
+            service.close()
+
     def test_partial_start_failure_still_stops_camera(self):
         self.core.startContinuousSequenceAcquisition.side_effect = RuntimeError("start failed")
         thread = self.thread()

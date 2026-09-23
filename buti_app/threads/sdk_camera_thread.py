@@ -10,6 +10,7 @@ except Exception:  # Optional SDK may be installed with missing runtime DLLs
 import numpy as np
 from cameras.frame_data import FrameData
 from cameras.trigger import configure_external_trigger, verify_external_trigger
+from cameras.timing_thread import TimingCameraThread
 
 from utils.config import DEFAULT_FPS
 from cameras.controls import CameraController, IC4Controls
@@ -21,7 +22,7 @@ from PyQt5.QtGui import QImage
 log = logging.getLogger(__name__)
 
 
-class SDKCameraThread(QThread):
+class SDKCameraThread(TimingCameraThread):
     """
     Opens the camera (using the DeviceInfo + resolution passed in via set_* methods),
     then starts a QueueSink-based stream. Each new frame is emitted as a QImage via
@@ -51,6 +52,7 @@ class SDKCameraThread(QThread):
 
         # Keep a reference to the sink so we can stop it later
         self._sink = None
+        self._accept_frames = True
 
     def set_device_info(self, dev_info):
         self._device_info = dev_info
@@ -205,7 +207,8 @@ class SDKCameraThread(QThread):
                     log.info("IC4 frame-rate enable switch unavailable; monitoring requested images.")
                 self.trigger_configuration = configure_external_trigger(
                     lambda n: props.find_enumeration(n).value,
-                    lambda n, v: setattr(props.find_enumeration(n), "value", v), source)
+                    lambda n, v: setattr(props.find_enumeration(n), "value", v), source,
+                    choices=lambda: [e.name for e in props.find_enumeration("TriggerSource").entries])
             adapter = IC4Controls(self.grabber)
             self.controller.open(adapter)
 
@@ -243,8 +246,38 @@ class SDKCameraThread(QThread):
                 verify_external_trigger(lambda n: props.find_enumeration(n).value, self.trigger_configuration)
             self.controller.service(adapter)
             self.grabber_ready.emit()
+            preview_rate_enable = None
+
+            def switch_timing(requested):
+                nonlocal preview_rate_enable
+                self._accept_frames = False
+                self.grabber.stream_stop()
+                if requested:
+                    try:
+                        node = props.find_boolean("AcquisitionFrameRateEnable")
+                        preview_rate_enable = node.value
+                        node.value = False
+                    except Exception:
+                        pass
+                    configured = configure_external_trigger(
+                        lambda n: props.find_enumeration(n).value,
+                        lambda n, v: setattr(props.find_enumeration(n), "value", v), requested,
+                        choices=lambda: [e.name for e in props.find_enumeration("TriggerSource").entries])
+                else:
+                    props.find_enumeration("TriggerMode").value = "Off"
+                    if preview_rate_enable is not None:
+                        props.find_boolean("AcquisitionFrameRateEnable").value = preview_rate_enable
+                    configured = {}
+                self.grabber.stream_setup(self._sink, setup_option=StreamSetupOption.ACQUISITION_START)
+                if configured:
+                    verify_external_trigger(lambda n: props.find_enumeration(n).value, configured)
+                self._accept_frames = True
+                log.info("IC4 acquisition timing: %s", configured or "preview")
+                return configured
+
             while not self._stop_requested:
                 self.controller.service(adapter)
+                self.service_timing(switch_timing)
                 self.msleep(10)
 
         except Exception as e:
@@ -276,6 +309,8 @@ class SDKCameraThread(QThread):
         """
         try:
             buf = sink.pop_output_buffer()
+            if not self._accept_frames:
+                return
             arr = buf.numpy_wrap()  # arr: shape=(H, W) dtype=uint8 or uint16
 
             # Downconvert 16‐bit to 8‐bit if necessary
@@ -292,7 +327,13 @@ class SDKCameraThread(QThread):
             qimg = QImage(gray8.data, w, h, gray8.strides[0], QImage.Format_Grayscale8)
 
             # Emit to the UI
-            self.frame_ready.emit(qimg.copy(), FrameData.copy(arr, pixel_format=str(arr.dtype), native_depth_preserved=not self._resolution or self._resolution[2] in {"Mono8", "Mono16"}))
+            try:
+                frame_id = buf.meta_data.device_frame_number
+            except Exception:
+                frame_id = -1
+            self.frame_ready.emit(qimg.copy(), FrameData.copy(arr, pixel_format=str(arr.dtype),
+                native_depth_preserved=not self._resolution or self._resolution[2] in {"Mono8", "Mono16"},
+                camera_frame_id=frame_id if frame_id >= 0 else None))
 
         except Exception as e:
             log.error(

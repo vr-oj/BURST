@@ -29,6 +29,56 @@ class CameraBackendTests(unittest.TestCase):
             self.assertEqual(registry.discover_cameras(), [])
             self.assertEqual(set(registry.unavailable), {b.key for b in registry.backend_types})
 
+    def test_ic4_preview_arm_and_restore_without_reopening_or_resetting_exposure(self):
+        from threads import sdk_camera_thread
+        nodes = {name: NS(value=value, entries=[NS(name=n) for n in choices]) for name, value, choices in (
+            ("TriggerMode", "Off", ("Off", "On")), ("TriggerSource", "Software", ("Software", "Line0")),
+            ("TriggerSelector", "FrameStart", ("FrameStart",)), ("TriggerActivation", "RisingEdge", ("RisingEdge",)),
+            ("AcquisitionMode", "Continuous", ("Continuous",)), ("ExposureAuto", "Off", ("Off", "Continuous")),
+            ("GainAuto", "Off", ("Off", "Continuous")))}
+        exposure = NS(value=10000)
+        rate_enable = NS(value=True)
+        class Props:
+            def __iter__(self):
+                return iter(())
+            def find_enumeration(self, name):
+                return nodes[name]
+            def find_float(self, name):
+                return exposure if name == "ExposureTime" else NS(value=0)
+            def find_boolean(self, name):
+                return rate_enable
+        grabber = Mock(device_property_map=Props())
+        sdk = NS(Grabber=lambda: grabber, Library=Mock(), LogLevel=NS(INFO=1), LogTarget=NS(STDERR=1),
+                 QueueSink=Mock(), PixelFormat=NS(Mono8=1, Mono16=2),
+                 StreamSetupOption=NS(ACQUISITION_START=1))
+        modes, errors = [], []
+        with patch.object(sdk_camera_thread, "ic4", sdk), \
+                patch.dict(sys.modules, {"imagingcontrol4": sdk}), \
+                patch.object(sdk_camera_thread, "IC4Controls", return_value=NS(read_controls=lambda: {})):
+            thread = SDKCameraThread()
+            thread.set_device_info(NS(model_name="Test", serial="1"))
+            def preview_ready():
+                exposure.value = 23000
+                thread.request_timing("auto")
+            def timing_ready(armed):
+                modes.append(armed)
+                if armed:
+                    thread.request_timing("")
+                else:
+                    thread.stop()
+            thread.grabber_ready.connect(preview_ready)
+            thread.timing_ready.connect(timing_ready)
+            thread.error.connect(lambda *args: errors.append(args))
+            thread.run()
+        self.assertEqual(errors, [])
+        self.assertEqual(modes, [True, False])
+        self.assertEqual(nodes["TriggerMode"].value, "Off")
+        self.assertEqual(nodes["TriggerSource"].value, "Line0")
+        self.assertEqual(exposure.value, 23000)
+        self.assertTrue(rate_enable.value)
+        self.assertEqual(grabber.device_open.call_count, 1)
+        self.assertEqual(grabber.stream_setup.call_count, 3)
+
     def test_unified_discovery_and_backend_failure_isolation(self):
         sdk = NS(Library=Mock(), LogLevel=NS(INFO=1), LogTarget=NS(STDERR=1),
                  DeviceEnum=NS(devices=lambda: [NS(model_name="DMK", serial="123", unique_name="usb-id")]))

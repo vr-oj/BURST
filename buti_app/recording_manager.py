@@ -60,6 +60,7 @@ class RecordingManager(QObject):
             raise ValueError("Unknown recording capture mode")
         self._external_trigger = self.acquisition_metadata.get("timing_mode") == "external_trigger" and self.capture_mode == "box"
         self._pending_frames = deque()
+        self._last_camera_frame_id = None
         self._recording_started_monotonic = 0
         self._box_observation = BoxObservation()
         self._images_requested = 0
@@ -157,6 +158,7 @@ class RecordingManager(QObject):
         self._images_requested = 0
         self._box_observation.reset()
         self._pending_frames.clear()
+        self._last_camera_frame_id = None
         self._recording_started_monotonic = time.monotonic()
 
         try:
@@ -307,6 +309,14 @@ class RecordingManager(QObject):
             return
         if isinstance(raw, FrameData) and raw.received_monotonic < self._recording_started_monotonic:
             return
+        if isinstance(raw, FrameData) and raw.camera_frame_id is not None:
+            frame_id = raw.camera_frame_id
+            if self._last_camera_frame_id is not None and frame_id != self._last_camera_frame_id + 1:
+                self._trigger_queue_failed(
+                    f"Camera frame counter changed from {self._last_camera_frame_id} to {frame_id}. "
+                    "Image/data alignment is uncertain; recording stopped.")
+                return
+            self._last_camera_frame_id = frame_id
         self._pending_frames.append((qimage.copy(), raw, time.monotonic()))
         if len(self._pending_frames) > 8:
             self._trigger_queue_failed("More than eight camera images arrived without matching Arduino trigger reports")
@@ -350,6 +360,7 @@ class RecordingManager(QObject):
                 arr = np.ascontiguousarray(arr)
                 pixel_metadata = {"native_depth_preserved": raw.native_depth_preserved,
                                   "pixel_format": raw.pixel_format,
+                                  "camera_frame_id": raw.camera_frame_id,
                                   "camera_received_monotonic": raw.received_monotonic}
             if self.tif_writer is None:
                 self.tif_writer = tifffile.TiffWriter(self._tiff_path, bigtiff=True)

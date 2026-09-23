@@ -1,12 +1,14 @@
 import importlib
 import logging
 import time
+from dataclasses import replace
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QImage
 from cameras.controls import CameraController
 from cameras.frame_data import FrameData
 from cameras.trigger import configure_external_trigger, verify_external_trigger
+from cameras.timing_thread import TimingCameraThread
 from cameras.spinnaker_backend import SpinnakerSession, SpinnakerControls
 from utils.config import DEFAULT_FPS
 
@@ -34,7 +36,7 @@ def copy_spinnaker_frame(sdk, image, processor):
             converted.Release()
 
 
-class SpinnakerCameraThread(QThread):
+class SpinnakerCameraThread(TimingCameraThread):
     grabber_ready = pyqtSignal()
     frame_ready = pyqtSignal(QImage, object)
     error = pyqtSignal(str, str)
@@ -73,7 +75,9 @@ class SpinnakerCameraThread(QThread):
                         log.info("Camera has no writable frame-rate enable switch; trigger delivery will be checked during recording.")
                     self.trigger_configuration = configure_external_trigger(
                         lambda n: adapter.node(n, "Enumeration").GetCurrentEntry().GetSymbolic(),
-                        adapter.set_enum, source)
+                        adapter.set_enum, source,
+                        choices=lambda: [sdk.CEnumEntryPtr(e).GetSymbolic() for e in adapter.node("TriggerSource", "Enumeration").GetEntries()
+                                         if sdk.IsAvailable(e)])
                 processor = sdk.ImageProcessor()
                 processor.SetColorProcessing(sdk.SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR)
                 try:
@@ -84,8 +88,41 @@ class SpinnakerCameraThread(QThread):
                     self.controller.open(adapter)
                     self.grabber_ready.emit()
                     last_frame = time.monotonic()
+                    preview_rate_enable = None
+
+                    def switch_timing(requested):
+                        nonlocal source, preview_rate_enable
+                        session.camera.EndAcquisition()
+                        session.acquiring = False
+                        if requested:
+                            try:
+                                enable = adapter.node("AcquisitionFrameRateEnable", "Boolean")
+                                preview_rate_enable = enable.GetValue()
+                                enable.SetValue(False)
+                            except Exception:
+                                pass
+                            configured = configure_external_trigger(
+                                lambda n: adapter.node(n, "Enumeration").GetCurrentEntry().GetSymbolic(),
+                                adapter.set_enum, requested,
+                                choices=lambda: [sdk.CEnumEntryPtr(e).GetSymbolic() for e in adapter.node("TriggerSource", "Enumeration").GetEntries()
+                                                 if sdk.IsAvailable(e)])
+                        else:
+                            adapter.set_enum("TriggerMode", "Off")
+                            if preview_rate_enable is not None:
+                                adapter.node("AcquisitionFrameRateEnable", "Boolean").SetValue(preview_rate_enable)
+                            configured = {}
+                        session.camera.BeginAcquisition()
+                        session.acquiring = True
+                        if configured:
+                            verify_external_trigger(lambda n: adapter.node(n, "Enumeration").GetCurrentEntry().GetSymbolic(), configured)
+                        source = requested
+                        log.info("Spinnaker acquisition timing: %s", configured or "preview")
+                        return configured
+
                     while not self._stop_requested:
                         self.controller.service(adapter)
+                        if self.service_timing(switch_timing):
+                            last_frame = time.monotonic()
                         try:
                             image = session.camera.GetNextImage(500)
                         except Exception as exc:
@@ -114,6 +151,7 @@ class SpinnakerCameraThread(QThread):
                                 payload = FrameData.copy(image.GetNDArray(), pixel_format=name)
                             else:
                                 payload = FrameData.copy(array, pixel_format="RGB8 converted preview", native_depth_preserved=False)
+                            payload = replace(payload, camera_frame_id=int(image.GetFrameID()))
                         finally:
                             image.Release()
                             del image

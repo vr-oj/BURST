@@ -6,6 +6,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QImage
 from cameras.controls import CameraController
 from cameras.frame_data import FrameData
+from cameras.timing_thread import TimingCameraThread
 from cameras.micro_manager_process import MicroManagerClient, RemoteMicroManagerControls, MicroManagerCancelled
 
 log = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ def copy_mm_frame(data, components, bit_depth):
     return QImage(array.data, width, height, array.strides[0], fmt).copy(), array
 
 
-class MMCoreCameraThread(QThread):
+class MMCoreCameraThread(TimingCameraThread):
     grabber_ready = pyqtSignal()
     frame_ready = pyqtSignal(QImage, object)
     error = pyqtSignal(str, str)
@@ -62,8 +63,18 @@ class MMCoreCameraThread(QThread):
                     self.controller.open(adapter)
                     self.grabber_ready.emit()
                     last_frame = time.monotonic()
+
+                    def switch_timing(requested):
+                        nonlocal source
+                        updated = client.request("timing", requested)
+                        source = requested
+                        log.info("Micro-Manager acquisition timing: %s", updated["trigger_configuration"] or "preview")
+                        return updated["trigger_configuration"]
+
                     while not self._stop_requested:
                         self.controller.service(adapter)
+                        if self.service_timing(switch_timing):
+                            last_frame = time.monotonic()
                         payload = client.request("next", timeout=10)
                         if payload is not None:
                             frame, components, bit_depth = payload

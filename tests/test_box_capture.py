@@ -231,3 +231,29 @@ class BoxCaptureTests(unittest.TestCase):
                 recorder._flush_recovery_outputs()
             self.assertFalse(recorder.is_recording)
             self.assertEqual(outputs[0][2].status, "warning")
+
+    def test_camera_counter_gap_or_duplicate_stops_before_wrong_pair_is_saved(self):
+        for frame_id in (10, 12, 1):
+            with self.subTest(frame_id=frame_id), tempfile.TemporaryDirectory() as folder:
+                recorder, outputs = self.recorder(folder, timing="external_trigger")
+                image = QImage(2, 2, QImage.Format_Grayscale8)
+                recorder.append_force(.1, 1, 0, 0, 10)
+                recorder.append_frame(image, FrameData.copy(np.zeros((2, 2), np.uint8), camera_frame_id=10))
+                recorder.append_force(.2, 2, 0, 0, 20)
+                recorder.append_frame(image, FrameData.copy(np.zeros((2, 2), np.uint8), camera_frame_id=frame_id))
+                self.assertFalse(recorder.is_recording)
+                self.assertEqual(outputs[0][2].frames_written, 1)
+                self.assertEqual(outputs[0][2].status, "warning")
+
+    def test_queued_preview_frame_is_excluded_from_triggered_recording(self):
+        with tempfile.TemporaryDirectory() as folder:
+            recorder, outputs = self.recorder(folder, timing="external_trigger")
+            image = QImage(2, 2, QImage.Format_Grayscale8)
+            recorder.append_frame(image, FrameData.copy(np.zeros((2, 2), np.uint8),
+                received_monotonic=recorder._recording_started_monotonic - 1, camera_frame_id=100))
+            recorder.append_force(.1, 1, 0, 0, 10)
+            recorder.append_frame(image, FrameData.copy(np.ones((2, 2), np.uint8), camera_frame_id=200))
+            recorder.stop_recording()
+            self.assertEqual(outputs[0][2].frames_written, 1)
+            with tifffile.TiffFile(outputs[0][1]) as stack:
+                self.assertEqual(json.loads(stack.pages[0].description)["pixels"]["camera_frame_id"], 200)

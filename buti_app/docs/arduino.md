@@ -34,7 +34,7 @@ BURST follows increases in the transmitted Frame counter rather than guessing th
 menu value. Repeated counters are valid. An unchanged counter alone cannot prove
 that None was selected, so the displayed selection remains unknown until measured.
 
-Under Acquisition → BURST recording mode:
+Under Acquisition → Advanced → BURST recording mode:
 
 - **Follow box Capture:** keep every force row and save images for trigger-counter
   increases. A run with no requested images produces CSV only, with no empty TIFF.
@@ -47,12 +47,18 @@ associated sample index, saved-image index and force value. Playback uses page
 associations for sparse recordings. External analysis software must support these
 associations; do not assume equal CSV-row and TIFF-page counts.
 
-## Choose camera timing before starting the camera
+## Preview and recording
 
-Acquisition → **Camera timing** offers two explicit modes. Software pairing is the
-initial default each app session. BURST never silently changes modes after failure.
+Start Camera opens a normal live preview for exposure/gain and ROI adjustment.
+Start Recording automatically stops the preview stream, enables and verifies
+Arduino triggering, opens a fresh recorder, and then sends G. Preview images cannot
+enter that recording. Stop Recording drains the recording before restoring preview
+on the same open camera, preserving exposure/gain and other image settings.
+Arduino-triggered recording is the default. BURST never silently changes modes after failure.
 
-**Software pairing (approximate):** works with free-running cameras, including
+**Software pairing (approximate):** explicitly enable **Acquisition → Advanced →
+Allow approximate software pairing** when this limitation is acceptable. The choice
+resets when changing cameras or restarting BURST. It works with free-running cameras, including
 generic USB cameras. No trigger cable is required. BURST associates the next
 available image in arrival order with each requested sample. The first row only
 establishes the trigger-counter baseline and has no image association. Different
@@ -60,18 +66,25 @@ camera/serial delivery delays remain; equal counts do not prove timing alignment
 
 **Arduino hardware trigger:** requires a camera with an external frame-trigger
 input, electrically compatible wiring, a supported adapter, and a validated setup.
-Enter the camera input name (for example Line0 or Line1) wired to the box. BURST
-requests FrameStart / RisingEdge / that input / TriggerMode On and verifies readback
+BURST reuses the camera's selected physical Line input, or selects its only available
+physical Line input. If several inputs exist and none is selected, configure the wired
+input once in Camera properties or the vendor utility. BURST cannot detect which
+wire is connected. It requests FrameStart / RisingEdge / that input / TriggerMode On and verifies readback
 after acquisition starts. IC4, Spinnaker, GenTL and Micro-Manager adapters exposing
 these properties are supported; incompatible adapters report an error. Generic
 OpenCV cameras remain usable in Software pairing mode.
 
 Use **ZERO on the box** before each triggered recording and keep the box stopped
-while BURST arms. Preview may remain blank until the box emits pulses. After the
+while BURST arms. The normal preview runs before recording; once armed, the camera
+waits for box pulses without reporting a preview timeout. After the
 recorder is ready, BURST sends G. The first counter must be 0 or 1; otherwise BURST
 stops. Images and serial events are buffered in either arrival order. Pending events
 over one second, extra images, counter gaps or time resets are errors requiring
-review. At stop, a short drain interval allows in-flight events to arrive. Exposure
+review. Where the SDK provides camera frame IDs, gaps, duplicates and resets stop
+recording before the unexpected image is paired; IDs are retained in TIFF metadata.
+Adapters that do not expose these IDs still use event-count and timeout checks.
+Neither method can certify an undetected missed initial pulse or simultaneous losses
+in both streams. At stop, a short drain interval allows in-flight events to arrive. Exposure
 or serial delays exceeding one second are outside this workflow's current limits.
 
 Trigger configuration and event checks are **not physical timing certification**.
@@ -83,7 +96,7 @@ synchronization. No software fallback may be labelled hardware synchronized.
 
 ## Recording safeguards and remaining limits
 
-A camera below the normal 10 FPS preview target displays guidance before software
+A camera below the normal 10 FPS preview target displays guidance before
 recording. Use Delay = 200 ms with Capture Every for approximately 5 images/second,
 or use sparse capture while keeping a higher force-sample rate. These are box changes,
 not BURST settings writes. The old manual 5 FPS readiness override has been removed.

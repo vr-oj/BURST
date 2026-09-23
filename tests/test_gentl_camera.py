@@ -30,6 +30,34 @@ def fake_sdk():
 
 
 class GenTLTests(unittest.TestCase):
+    def test_preview_arm_and_restore_acquisition(self):
+        sdk, acquirer, _, events = fake_sdk()
+        node_map = NS(**{name: NS(value=value, symbolics=choices) for name, value, choices in (
+            ("TriggerMode", "Off", ("Off", "On")), ("TriggerSource", "Software", ("Software", "Line0")),
+            ("TriggerSelector", "FrameStart", ("FrameStart",)), ("TriggerActivation", "RisingEdge", ("RisingEdge",)),
+            ("AcquisitionMode", "Continuous", ("Continuous",)), ("AcquisitionFrameRateEnable", True, ()))})
+        acquirer.remote_device.node_map = node_map
+        acquirer.try_fetch.return_value = None
+        genapi = NS(is_readable=lambda node: True, is_writable=lambda node: True)
+        thread = GenTLCameraThread(sdk=sdk, genapi=genapi)
+        thread.set_device_info({"producer": "vendor.cti", "id": "device-42"})
+        thread.grabber_ready.connect(lambda: thread.request_timing("auto"))
+        modes, errors = [], []
+        def ready(armed):
+            modes.append(armed)
+            if armed:
+                thread.request_timing("")
+            else:
+                thread.stop()
+        thread.timing_ready.connect(ready)
+        thread.error.connect(lambda *args: errors.append(args))
+        thread.run()
+        self.assertEqual(errors, [])
+        self.assertEqual(modes, [True, False])
+        self.assertEqual(node_map.TriggerMode.value, "Off")
+        self.assertTrue(node_map.AcquisitionFrameRateEnable.value)
+        self.assertEqual(events, ["start", "stop", "start", "stop", "start", "stop", "destroy", "reset"])
+
     def test_advertised_producer_paths_are_bounded_and_deduplicated(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "vendor.cti"

@@ -28,7 +28,7 @@ backend can use it; otherwise an installed adapter implements the contract below
    Prefer a camera-only configuration: loading a configuration initializes **all**
    devices named in it, including other microscope hardware. Close Micro-Manager
    and other camera programs before using the camera in BURST.
-3. In BURST open **Acquisition → Micro-Manager Camera Setup…**. Browse to the
+3. In BURST open **Acquisition → Advanced → Micro-Manager Camera Setup…**. Browse to the
    Micro-Manager folder containing its device adapters and your `.cfg` file.
 4. Choose **Load configuration and find cameras**. This runs outside the GUI
    thread in an isolated helper process, validates configuration loading and lists its cameras, then releases
@@ -209,6 +209,17 @@ vendor_sdk = "my_camera_package:Backend"
   thread; `finished` is emitted only after native cleanup.
 - `close()` for registry-owned resources after acquisition threads have stopped.
 
+For Arduino-triggered recording, also implement `request_timing(source)` and
+`timing_ready(bool)`, with `trigger_configuration` containing verified settings.
+The source is `"auto"` when arming and `""` when returning to preview. Perform SDK
+operations in the worker: stop/drain preview, configure and verify triggering,
+restart acquisition, then emit readiness. An arming failure must emit an error and
+close acquisition, never acknowledge readiness or fall back to preview. The shared
+`cameras.timing_thread.TimingCameraThread` provides the queue and ready signal.
+Supply owned `FrameData` with monotonic receipt time and a sequential native camera
+frame ID where available. Adapters without this timing interface still support
+preview and explicitly selected approximate recording.
+
 Use `cameras.controls.CameraController` for capability snapshots and queued writes.
 Its adapter implements `read_controls()` and `set_value(name, value)`, called only
 by the acquisition worker. Normalized keys are exposure, gain, fps, auto_exposure,
@@ -278,7 +289,9 @@ Read [Arduino compatibility](arduino.md) for the firmware protocol and rate setu
 
 In **Follow box Capture** mode, every force sample is saved. A counter increase
 requests one associated image; repeated counters intentionally request none.
-The first row is only a baseline because its trigger phase is unknown. A constant
+In approximate software mode, the first row is only a baseline because its trigger
+phase is unknown. Triggered recording instead requires a zeroed box counter and
+includes the first image when the first reported counter is 1. A constant
 counter produces a CSV with no TIFF. This follows the box's emitted requests,
 including capture changes, without pretending to read its menu selections.
 
@@ -294,15 +307,22 @@ images stops recording and requests a device stop. Backwards/nonadvancing device
 time or a backwards counter also stops recording for review. Gaps in trigger counts
 are reported. These checks cannot establish exposure synchronization.
 
-Choose **Acquisition → Camera timing** before starting the camera. Software pairing
-is the initial default. Arduino trigger mode configures FrameStart, a user-selected
-physical input and RisingEdge, verifies readback after arming, and waits for box
-pulses without a preview timeout. This requires a trigger-capable camera and compatible
-wiring. IC4, Spinnaker, GenTL and Micro-Manager adapters exposing the required nodes
-can be armed. Unsupported adapters remain usable in explicit software mode; failures
-never silently fall back. Use ZERO on the box before each triggered run. Hardware
-mode handles images and serial events arriving in either order; see the Arduino
-guide for limits and required physical timing validation.
+Start Camera always opens live preview. Start Recording automatically switches to
+Arduino triggering before starting the box, then Stop Recording returns to preview
+without reopening the camera or resetting image settings. FrameStart, RisingEdge and
+the selected physical input are verified after arming. BURST reuses a selected Line
+input or chooses the only available Line input; ambiguous inputs require one-time
+setup in camera properties/vendor tools. No typed trigger-name prompt is part of
+normal recording. Physical wiring is still required and cannot be detected by this check.
+
+IC4, Spinnaker, GenTL and Micro-Manager adapters exposing the required nodes can be
+armed. Unsupported cameras can preview normally and remain usable through
+**Acquisition → Advanced → Allow approximate software pairing**, with explicit
+consent and visible timing labels. This choice resets when switching cameras or
+restarting BURST; failures never silently fall back. Use ZERO on the box before each
+triggered run. Hardware mode buffers either arrival order and checks native frame
+IDs where supplied (IC4, Spinnaker, compatible GenTL producers). See the Arduino
+guide for remaining detection limits and required physical timing validation.
 
 TIFF metadata identifies the force sample associated with each saved page and the
 saved image index. Playback uses this association for sparse recordings. Host

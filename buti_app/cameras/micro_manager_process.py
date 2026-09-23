@@ -138,6 +138,7 @@ class MicroManagerService:
         self.sdk = sdk
         self.session = None
         self.adapter = None
+        self.preview_rate_switches = {}
 
     def dispatch(self, method, args):
         from .micro_manager_backend import MicroManagerSession, MicroManagerControls
@@ -163,16 +164,22 @@ class MicroManagerService:
                 except Exception as exc:
                     log.warning("Could not request 10 FPS: %s", exc)
             source = args[1] if len(args) > 1 else ""
+            return self.dispatch("timing", (source,))
+        if method == "timing":
+            from .trigger import configure_external_trigger, verify_external_trigger
+            source = args[0]
+            self.session.stop()
             self.trigger_configuration = {}
+            core, camera = self.session.core, self.session.camera
             if source:
-                from .trigger import configure_external_trigger, verify_external_trigger
-                core, camera = self.session.core, self.session.camera
                 self.trigger_configuration = configure_external_trigger(
                     lambda n: core.getProperty(camera, n),
-                    lambda n, v: core.setProperty(camera, n, v), source)
+                    lambda n, v: core.setProperty(camera, n, v), source,
+                    choices=lambda: core.getAllowedPropertyValues(camera, "TriggerSource"))
                 for name in ("Frame Rate Control Enabled", "AcquisitionFrameRateEnable"):
                     try:
                         if core.hasProperty(camera, name) and not core.isPropertyReadOnly(camera, name):
+                            self.preview_rate_switches[name] = core.getProperty(camera, name)
                             core.setProperty(camera, name, "0")
                     except Exception:
                         log.info("Adapter frame-rate switch %s could not be disabled.", name)
@@ -183,6 +190,12 @@ class MicroManagerService:
                     self.adapter.set_value("mm:TriggerMode", "Off")
                 elif "Internal" in control.choices:
                     self.adapter.set_value("mm:TriggerMode", "Internal")
+                else:
+                    raise RuntimeError("This adapter requires its preview trigger mode to be configured in Micro-Manager.")
+            if not source:
+                for name, value in self.preview_rate_switches.items():
+                    core.setProperty(camera, name, value)
+                self.preview_rate_switches.clear()
             self.session.start()
             if source:
                 verify_external_trigger(lambda n: core.getProperty(camera, n), self.trigger_configuration)

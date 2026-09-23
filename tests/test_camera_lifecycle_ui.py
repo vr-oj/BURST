@@ -76,6 +76,7 @@ class CameraLifecycleUiTests(unittest.TestCase):
             self.assertFalse(window.device_combo.isEnabled())
             self.assertEqual(thread.resolution, (4, 2, "Mono8"))
             # A running camera with one recent image must not bypass the rate check.
+            window._hardware_trigger_source = ""  # Explicit approximate recording.
             with tempfile.TemporaryDirectory() as directory, \
                     patch.object(main_window.config, "BURST_ROOT", directory), \
                     patch.object(window, "_show_camera_rate_help") as help_dialog:

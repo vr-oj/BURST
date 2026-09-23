@@ -45,13 +45,15 @@ def check_camera_rate(measured, configured=None, maximum=None, target=10.0):
 
 
 RATE_GUIDANCE = (
-    "BURST requests 10 FPS for preview by default. Recording follows changes in the "
-    "Arduino trigger counter and keeps every force sample. The first sample establishes "
-    "the counter baseline; no image is assigned to that row because its trigger phase is unknown. "
-    "A camera delivering 6.8 FPS can keep up with about 5 requested images/second.\n\n"
+    "Preview runs at a requested 10 FPS. Start Recording automatically prepares the camera "
+    "for Arduino triggers, then starts the box. Connect the trigger cable and use ZERO on "
+    "the box before each recording. BURST keeps every force sample and follows the box's "
+    "Capture setting. A camera delivering 6.8 FPS may be suitable for about 5 images/second.\n\n"
     "For more camera throughput, reduce acquisition resolution, use Mono8, shorten exposure "
     "with more light, or check USB bandwidth. The recording ROI only crops saved images.\n\n"
     "BURST cannot read or change the box's Capture/Delay menu settings remotely. "
     "It observes counter changes during a run and stops if requested images fall behind. "
-    "Software image pairing is not verified hardware synchronization."
+    "If triggering is unavailable, Acquisition → Advanced offers explicitly labelled "
+    "approximate software pairing. Its image exposure times can drift from the force data. "
+    "Hardware triggering also requires physical timing validation of the connected setup."
 )

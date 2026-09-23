@@ -105,6 +105,7 @@ from ui.canvas.force_plot_widget import ForcePlotWidget
 
 from threads.serial_thread import SerialThread
 from cameras import CameraRegistry
+from cameras.trigger import AUTO_TRIGGER
 from recording_manager import RecordingManager
 from utils.utils import list_serial_ports
 from playback_window import PlaybackWindow
@@ -135,8 +136,13 @@ class MainWindow(QMainWindow):
         self._camera_rate_monitor = CameraRateMonitor()
         self._box_observation = BoxObservation()
         self._recording_capture_mode = "box"
-        self._hardware_trigger_source = ""
+        self._hardware_trigger_source = AUTO_TRIGGER
         self._camera_armed = False
+        self._timing_transition = ""
+        self._preview_fps_at_recording = None
+        self._timing_timer = QTimer(self)
+        self._timing_timer.setSingleShot(True)
+        self._timing_timer.timeout.connect(self._on_timing_timeout)
         self._completion_sound_enabled = bool(
             load_app_setting(SETTING_COMPLETION_SOUND, True)
         )
@@ -193,6 +199,7 @@ class MainWindow(QMainWindow):
         self._populate_device_list()
         self._set_initial_control_states()
         self.camera_info_panel.rate_help_button.clicked.connect(self._show_camera_rate_help)
+        self.camera_info_panel.rate_help_button.setText("Recording help")
         self.camera_control_panel.camera_settings_changed.connect(self._camera_rate_monitor.reset)
         self._camera_rate_timer = QTimer(self)
         self._camera_rate_timer.setInterval(1000)
@@ -494,6 +501,9 @@ class MainWindow(QMainWindow):
         if self.camera_widget is not None:
             self.camera_widget.clear_roi()
         device = self.device_combo.itemData(index)
+        # Approximate pairing is an explicit choice for this camera/session only.
+        self._hardware_trigger_source = AUTO_TRIGGER
+        self.timing_action.setChecked(False)
         self.resolution_combo.clear()
         self.resolution_combo.setToolTip("")
         self.resolution_combo.addItem("Choose resolution…", None)
@@ -577,11 +587,10 @@ class MainWindow(QMainWindow):
                 self._on_camera_error(str(exc), "camera-open")
                 return
             self._camera_armed = False
-            if self._hardware_trigger_source and dev_info.backend not in {"ic4", "spinnaker", "gentl", "micromanager"}:
-                self.camera_thread = None
-                QMessageBox.warning(self, "Trigger mode unavailable", "This backend does not expose external triggering. Select Software pairing to use this camera.")
-                return
-            self.camera_thread.hardware_trigger_source = self._hardware_trigger_source
+            # Preview always free-runs. Arm only at the recording boundary.
+            self.camera_thread.hardware_trigger_source = ""
+            if hasattr(self.camera_thread, "timing_ready"):
+                self.camera_thread.timing_ready.connect(self._on_camera_timing_ready)
             self.camera_thread.set_resolution((w, h, pf_name))
             self.camera_thread.grabber_ready.connect(self._on_grabber_ready)
             self.camera_thread.frame_ready.connect(self.camera_widget._on_frame_ready)
@@ -626,6 +635,8 @@ class MainWindow(QMainWindow):
         self.camera_control_panel.setEnabled(False)
         self.camera_thread = None
         self._camera_armed = False
+        self._timing_transition = ""
+        self._timing_timer.stop()
         thread.deleteLater()
         self._last_camera_frame_monotonic = None
         can_select = self._recording_state == "idle"
@@ -717,29 +728,40 @@ class MainWindow(QMainWindow):
                         break
 
     def _camera_rate_check(self):
+        if self._camera_armed:
+            return RateCheck(True, "Camera armed for Arduino triggers.")
         if self._hardware_trigger_source:
-            return RateCheck(self._camera_armed, "Armed for Arduino trigger pulses · Exposure-to-force timing requires validation." if self._camera_armed else "Camera is not armed for external triggers.")
+            return RateCheck(True, "Preview ready. Camera triggering will be checked before recording.")
         measured = self._camera_rate_monitor.fps(time.monotonic())
         if measured is None:
             return check_camera_rate(None)
         target = self._box_observation.image_hz if self._device_run_active else None
         if target:
             return check_camera_rate(measured, target=target)
-        return RateCheck(True, f"Receiving {measured:.2f} FPS · Box capture rate unverified until a run; lag checks stay active.")
+        return RateCheck(True, f"Receiving {measured:.2f} FPS.")
 
     def _update_camera_rate_status(self):
         if self.camera_thread is None or not self.camera_thread.isRunning():
             self._camera_rate_monitor.reset()
-            mode = "Arduino trigger selected" if self._hardware_trigger_source else "Software pairing (approximate timing)"
-            self.camera_info_panel.rate_status.setText(mode + " · Start the camera to prepare recording.")
+            self.camera_info_panel.rate_status.setText("Start the camera to preview and adjust the image.")
             self.camera_info_panel.rate_status.setStyleSheet("")
             return
         measured = self._camera_rate_monitor.fps(time.monotonic())
         self.camera_info_panel.set_fps(measured)
         check = self._camera_rate_check()
-        self.camera_info_panel.rate_status.setText(("" if self._hardware_trigger_source else "Software pairing · ") + check.detail)
-        verified = self._device_run_active and self._box_observation.image_hz is not None
-        self.camera_info_panel.rate_status.setStyleSheet("" if check.passed and verified else "color: #f3c969;")
+        if self._timing_transition:
+            detail = "Preparing camera for recording…" if self._timing_transition == "arming" else "Returning to preview…"
+        elif self._camera_armed:
+            detail = "Arduino-triggered recording" if self._recording_state == "recording" else "Camera ready for Arduino triggers"
+        elif self._hardware_trigger_source:
+            detail = "Preview · Use ZERO on the Arduino box before recording."
+        else:
+            detail = "Approximate software pairing · " + check.detail
+        self.camera_info_panel.rate_status.setText(detail)
+        self.camera_info_panel.rate_status.setToolTip(
+            "Arduino-triggered recording requires the trigger cable and a supported camera input. "
+            "BURST checks settings and image/data association; physical exposure-to-force timing requires setup validation.")
+        self.camera_info_panel.rate_status.setStyleSheet("" if check.passed else "color: #f3c969;")
 
     def _show_camera_rate_help(self, detail=None):
         if not isinstance(detail, str):
@@ -753,7 +775,7 @@ class MainWindow(QMainWindow):
         diagnostics = controller.diagnostics() if controller else {}
         dialog.setDetailedText("Camera diagnostics:\n" + json.dumps(diagnostics, indent=2))
         retry = None
-        if self._recording_state == "idle" and not self._device_run_active:
+        if self._recording_state == "idle" and not self._device_run_active and not self._timing_transition:
             fps = controller.capabilities().get("fps") if controller else None
             if fps and fps.writable:
                 retry = dialog.addButton("Request 10 FPS preview", QMessageBox.ActionRole)
@@ -763,35 +785,28 @@ class MainWindow(QMainWindow):
             controller.set_value("fps", float(DEFAULT_FPS))
             self._camera_rate_monitor.reset()
 
-    def _configure_timing(self):
-        if self.camera_thread is not None or self._recording_state != "idle" or self._device_run_active:
-            QMessageBox.information(self, "Stop acquisition first", "Stop the device and camera before changing timing mode.")
+    def _configure_timing(self, approximate):
+        if self._recording_state != "idle" or self._device_run_active or self._timing_transition:
+            self.timing_action.setChecked(not bool(self._hardware_trigger_source))
             return
-        mode, accepted = QInputDialog.getItem(self, "Camera timing", "Choose timing mode:",
-            ["Software pairing (approximate timing)", "Arduino hardware trigger (requires wiring and validation)"],
-            1 if self._hardware_trigger_source else 0, False)
-        if not accepted:
-            return
-        if mode.startswith("Software"):
-            self._hardware_trigger_source = ""
-        else:
-            source, accepted = QInputDialog.getText(self, "Camera trigger input",
-                "Enter the camera input wired to the Arduino (for example Line0 or Line1).\n"
-                "Check voltage compatibility and pinout in the camera manual. Rising-edge FrameStart is used.\n"
-                "Use ZERO on the box before each recording; do not run it while BURST is preparing.\n"
-                "Capability/readback checks do not validate physical exposure timing.",
-                text=self._hardware_trigger_source or "Line0")
-            if not accepted or not source.strip():
+        if approximate:
+            answer = QMessageBox.warning(self, "Approximate recording",
+                "Images will be paired with serial rows by arrival order. The camera will not follow "
+                "the Arduino trigger cable, so exposure timing can drift.\n\n"
+                "Use this only when approximate video timing is acceptable. Enable for this camera?",
+                QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+            if answer != QMessageBox.Yes:
+                self.timing_action.setChecked(False)
                 return
-            self._hardware_trigger_source = source.strip()
+        self._hardware_trigger_source = "" if approximate else AUTO_TRIGGER
+        self.timing_action.setChecked(approximate)
         self._update_camera_rate_status()
-        self.timing_action.setText("Camera timing: " + ("Arduino trigger" if self._hardware_trigger_source else "Software pairing") + "…")
 
     def _show_box_settings(self):
         BoxStatusDialog(self).exec_()
 
     def _set_capture_mode(self, mode):
-        if self._recording_state != "idle" or self._device_run_active:
+        if self._recording_state != "idle" or self._device_run_active or self._timing_transition:
             self.statusBar().showMessage("Stop the run before changing BURST recording mode.", 4000)
             self.capture_mode_actions[self._recording_capture_mode].setChecked(True)
             return
@@ -857,13 +872,16 @@ class MainWindow(QMainWindow):
         fm.addAction(exit_act)
 
         am = mb.addMenu("&Acquisition")
-        self.timing_action = am.addAction("Camera timing: Software pairing…", self._configure_timing)
-        am.addAction("Arduino box settings and status…", self._show_box_settings)
-        capture_menu = am.addMenu("BURST recording mode")
+        advanced = am.addMenu("Advanced")
+        self.timing_action = QAction("Allow approximate software pairing", self, checkable=True)
+        self.timing_action.triggered.connect(self._configure_timing)
+        advanced.addAction(self.timing_action)
+        advanced.addAction("Arduino box settings and status…", self._show_box_settings)
+        capture_menu = advanced.addMenu("BURST recording mode")
         self.capture_mode_group = QActionGroup(self)
         self.capture_mode_group.setExclusive(True)
         self.capture_mode_actions = {}
-        for mode, label in (("box", "Follow box Capture (software image pairing)"), ("force_only", "Force only (save no images in BURST)")):
+        for mode, label in (("box", "Follow Arduino Capture setting"), ("force_only", "Force only (save no images in BURST)")):
             action = QAction(label, self, checkable=True)
             action.setChecked(mode == self._recording_capture_mode)
             action.triggered.connect(lambda checked, m=mode: self._set_capture_mode(m))
@@ -872,7 +890,7 @@ class MainWindow(QMainWindow):
             self.capture_mode_actions[mode] = action
         self.micro_manager_setup_action = QAction("Micro-Manager Camera Setup…", self,
                                                 triggered=self._setup_micro_manager)
-        am.addAction(self.micro_manager_setup_action)
+        advanced.addAction(self.micro_manager_setup_action)
         self.recording_action = QAction(
             self.icon_record_start,
             "Start &Recording",
@@ -1092,7 +1110,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_start_pump(self):
         """Send the firmware start command without recording."""
-        if self._recording_state != "idle" or self._device_run_active:
+        if self._recording_state != "idle" or self._device_run_active or self._timing_transition:
             self.statusBar().showMessage("The BUTI device is already running.", 3000)
             return
         if self._send_serial_command(SERIAL_CMD_START):
@@ -1577,6 +1595,10 @@ class MainWindow(QMainWindow):
         """Begin a logical device run before its first sample is plotted."""
 
         self._device_run_active = True
+        if self._recording_state == "preparing" and not self._serial_start_sent:
+            self._request_recording_stop(send_device_stop=True, reason="box started before camera was ready")
+            self.statusBar().showMessage("Recording cancelled: wait for BURST to start the Arduino. Use ZERO before retrying.", 10000)
+            return
         self._box_observation.reset()
         self.top_ctrl.set_run_state(True, connected=True)
         if self.force_plot_widget is not None:
@@ -1655,6 +1677,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_start_recording(self):
         """Prepare a synchronized run and start the device only when ready."""
+        if self._recording_state != "idle" or self._timing_transition:
+            return
         if self._current_session_name is None:
             self._change_recording_session()
         if self._current_session_name is None:
@@ -1662,6 +1686,75 @@ class MainWindow(QMainWindow):
         if not self._run_silent_recording_preflight():
             self._refresh_recording_button_states()
             return
+        self._preview_fps_at_recording = self._camera_rate_monitor.fps(time.monotonic())
+
+        if self._recording_capture_mode == "box" and self._hardware_trigger_source:
+            if not callable(getattr(self.camera_thread, "request_timing", None)):
+                QMessageBox.information(self, "Camera synchronization unavailable",
+                    "This camera connection supports preview but does not expose Arduino triggering. "
+                    "Try the camera's vendor backend or a compatible Micro-Manager adapter.\n\n"
+                    "If approximate video timing is acceptable, enable Acquisition > Advanced > "
+                    "Allow approximate software pairing. Recording has not started.")
+                return
+            self._recording_state = "preparing"
+            self._timing_transition = "arming"
+            self.camera_control_panel.set_recording_state(True)
+            self.camera_control_panel.setEnabled(False)
+            self.camera_info_panel.set_transform_controls_enabled(False)
+            self.btn_start_camera.setEnabled(False)
+            self._refresh_recording_button_states()
+            self.recording_status_label.setText("Preparing camera…")
+            self._timing_timer.start(35000)
+            self.camera_thread.request_timing(self._hardware_trigger_source)
+            return
+        self._start_recording_files()
+
+    @pyqtSlot(bool)
+    def _on_camera_timing_ready(self, armed):
+        if self.sender() is not self.camera_thread:
+            return
+        transition = self._timing_transition
+        self._timing_timer.stop()
+        self._camera_armed = armed
+        self._timing_transition = ""
+        self._last_camera_frame_monotonic = None
+        self._camera_rate_monitor.reset()
+        if transition == "arming" and self._recording_state == "preparing":
+            if not armed or not self._run_silent_recording_preflight():
+                self._recording_state = "idle"
+                self._restore_camera_preview()
+                return
+            self._start_recording_files()
+        elif transition == "preview":
+            self.camera_control_panel.set_recording_state(False)
+            self.camera_control_panel.setEnabled(True)
+            self.camera_info_panel.set_transform_controls_enabled(True)
+            self.btn_start_camera.setEnabled(True)
+            self.camera_info_panel.set_status_message("Streaming")
+            self.recording_status_label.setText("Not Recording")
+            self._refresh_recording_button_states()
+        self._update_camera_rate_status()
+
+    def _restore_camera_preview(self):
+        if self._camera_armed and self.camera_thread is not None and self.camera_thread.isRunning() and not self._closing:
+            self._timing_transition = "preview"
+            self.btn_start_camera.setEnabled(False)
+            self._timing_timer.start(35000)
+            self.camera_thread.request_timing("")
+        else:
+            self.camera_control_panel.set_recording_state(False)
+            self.camera_control_panel.setEnabled(self.camera_thread is not None)
+            self.camera_info_panel.set_transform_controls_enabled(True)
+            self.btn_start_camera.setEnabled(True)
+        self._refresh_recording_button_states()
+
+    def _on_timing_timeout(self):
+        if self._timing_transition:
+            self._on_camera_error("The camera did not finish changing acquisition mode. "
+                                  "Restart the camera before recording.", "camera-timing-timeout")
+
+    def _start_recording_files(self):
+        """Connect a fresh recorder only after the camera's preview stream is gone."""
 
         try:
             outdir = get_next_run_folder(self._current_session_name)
@@ -1670,6 +1763,8 @@ class MainWindow(QMainWindow):
                 "Recording Folder Error",
                 f"Unable to create the next Run folder:\n{exc}",
             )
+            self._recording_state = "idle"
+            self._restore_camera_preview()
             return
         self._current_run_folder = outdir
         self._last_recording_paths = {"tiff": None, "csv": None}
@@ -1753,13 +1848,8 @@ class MainWindow(QMainWindow):
             hardware_armed=self._camera_armed and bool(self._hardware_trigger_source),
         )
         if report.passed:
-            if self._hardware_trigger_source and self._recording_capture_mode == "box":
-                answer = QMessageBox.question(self, "Ready for Arduino triggers",
-                    "Use ZERO on the Arduino box so its frame counter starts at zero. Confirm the trigger cable is connected to "
-                    + self._hardware_trigger_source + ". The camera is armed and waits for pulses; preview may be blank.\n\n"
-                    "BURST checks event counts, but physical exposure-to-force timing has not been validated. Start recording?",
-                    QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
-                return answer == QMessageBox.Yes
+            if self._camera_armed:
+                return True
             measured = self._camera_rate_monitor.fps(now)
             if self._recording_capture_mode == "box" and measured is not None and measured < 9.5:
                 answer = QMessageBox.warning(self, "Check box capture rate",
@@ -1804,17 +1894,17 @@ class MainWindow(QMainWindow):
             "run": os.path.basename(outdir),
             "camera_resolution": resolution,
             "capture_mode": self._recording_capture_mode,
-            "timing_mode": "external_trigger" if self._hardware_trigger_source else "software",
+            "timing_mode": "force_only" if self._recording_capture_mode == "force_only" else ("external_trigger" if self._camera_armed else "software"),
             "trigger_configuration": getattr(self.camera_thread, "trigger_configuration", {}),
             "timing_validation": "not_verified_by_burst",
             "box_observation_before_run": self._box_observation.snapshot(),
-            "first_sample_policy": "requires_zeroed_box" if self._hardware_trigger_source else "baseline_only_trigger_phase_unknown",
+            "first_sample_policy": "requires_zeroed_box" if self._camera_armed else "baseline_only_trigger_phase_unknown",
             "camera_rate": {
                 "preview_requested_fps": DEFAULT_FPS,
                 "recording_rate_source": "device_trigger_counter_transitions",
-                "measured_delivery_fps": self._camera_rate_monitor.fps(time.monotonic()),
+                "measured_delivery_fps": self._preview_fps_at_recording,
                 "diagnostics": self.camera_thread.controller.diagnostics() if self.camera_thread else {},
-                "pairing": "ordered_trigger_events" if self._hardware_trigger_source else "arrival_order_not_hardware_synchronized",
+                "pairing": "ordered_trigger_events" if self._camera_armed else "arrival_order_not_hardware_synchronized",
             },
             "frame_transform": {
                 "normalized_roi": list(roi) if roi else None,
@@ -1847,6 +1937,9 @@ class MainWindow(QMainWindow):
         """Send the start command to the BUTI Arduino Box when recording setup is done."""
         if self._recording_state != "preparing":
             return
+        if self._recording_capture_mode == "box" and self._hardware_trigger_source and not self._camera_armed:
+            self._request_recording_stop(send_device_stop=False, reason="camera is not armed")
+            return
         self._serial_start_sent = self._send_serial_command(SERIAL_CMD_START)
         if self._serial_start_sent:
             self._recording_state = "recording"
@@ -1867,6 +1960,18 @@ class MainWindow(QMainWindow):
 
     def _request_recording_stop(self, *, send_device_stop: bool, reason: str):
         if self._recording_state not in {"preparing", "recording"}:
+            return
+        if self._recording_state == "preparing" and self._recorder_worker is None:
+            self._timing_timer.stop()
+            self._timing_transition = ""
+            self._recording_state = "idle"
+            if send_device_stop and self._device_run_active:
+                self._send_serial_command(SERIAL_CMD_STOP)
+            if self.camera_thread is not None:
+                self.camera_thread.stop()
+            self.recording_status_label.setText("Recording preparation cancelled")
+            self.camera_info_panel.set_transform_controls_enabled(True)
+            self._refresh_recording_button_states()
             return
         if send_device_stop:
             if self._send_serial_command(SERIAL_CMD_STOP):
@@ -2089,6 +2194,7 @@ class MainWindow(QMainWindow):
             self.camera_widget.normalized_roi() is not None,
         )
         self._refresh_recording_button_states()
+        self._restore_camera_preview()
         if self._recording_had_output:
             self._recording_had_output = False
             self._run_recording_completion_prompts()
@@ -2116,11 +2222,12 @@ class MainWindow(QMainWindow):
             self.recording_action.setIcon(self.icon_record_start)
             self.recording_action.setText("Start &Recording")
             self.recording_action.setShortcut(Qt.CTRL | Qt.Key_R)
-            can_start = serial_ready and (camera_ready or self._recording_capture_mode == "force_only") and not self._device_run_active
+            can_start = serial_ready and (camera_ready or self._recording_capture_mode == "force_only") and not self._device_run_active and not self._timing_transition
             self.recording_action.setEnabled(can_start)
             self.top_ctrl.set_recording_state("idle", can_start)
         if hasattr(self, "change_session_action"):
-            self.change_session_action.setEnabled(self._recording_state == "idle")
+            self.change_session_action.setEnabled(self._recording_state == "idle" and not self._timing_transition)
+        self.timing_action.setEnabled(self._recording_state == "idle" and not self._timing_transition)
 
     # ─── Window Close Cleanup ──────────────────────────────────────────────────
     def closeEvent(self, event):

@@ -6,6 +6,7 @@ from PyQt5.QtGui import QImage
 from cameras.controls import CameraController
 from cameras.frame_data import FrameData
 from cameras.trigger import configure_external_trigger, verify_external_trigger
+from cameras.timing_thread import TimingCameraThread
 from cameras.gentl_backend import GenTLSession, GenTLControls, SUPPORTED_FORMATS
 from utils.config import DEFAULT_FPS
 
@@ -39,7 +40,7 @@ def copy_gentl_frame(component, preserve_depth=False):
     return image, recording if preserve_depth else array
 
 
-class GenTLCameraThread(QThread):
+class GenTLCameraThread(TimingCameraThread):
     grabber_ready = pyqtSignal()
     frame_ready = pyqtSignal(QImage, object)
     error = pyqtSignal(str, str)
@@ -75,7 +76,8 @@ class GenTLCameraThread(QThread):
                         except Exception:
                             log.info("GenTL frame-rate enable switch unavailable; monitoring requested images.")
                         self.trigger_configuration = configure_external_trigger(
-                            lambda n: adapter.node(n).value, adapter.set_node, source)
+                            lambda n: adapter.node(n).value, adapter.set_node, source,
+                            choices=lambda: adapter.node("TriggerSource").symbolics)
                     session.acquirer.start()
                     session.acquiring = True
                     if source:
@@ -83,8 +85,38 @@ class GenTLCameraThread(QThread):
                     self.controller.open(adapter)
                     self.grabber_ready.emit()
                     last_frame = time.monotonic()
+                    preview_rate_enable = None
+
+                    def switch_timing(requested):
+                        nonlocal source, preview_rate_enable
+                        session.acquirer.stop()
+                        session.acquiring = False
+                        if requested:
+                            try:
+                                preview_rate_enable = adapter.node("AcquisitionFrameRateEnable").value
+                                adapter.set_node("AcquisitionFrameRateEnable", False)
+                            except Exception:
+                                pass
+                            configured = configure_external_trigger(
+                                lambda n: adapter.node(n).value, adapter.set_node, requested,
+                                choices=lambda: adapter.node("TriggerSource").symbolics)
+                        else:
+                            adapter.set_node("TriggerMode", "Off")
+                            if preview_rate_enable is not None:
+                                adapter.set_node("AcquisitionFrameRateEnable", preview_rate_enable)
+                            configured = {}
+                        session.acquirer.start()
+                        session.acquiring = True
+                        if configured:
+                            verify_external_trigger(lambda n: adapter.node(n).value, configured)
+                        source = requested
+                        log.info("GenTL acquisition timing: %s", configured or "preview")
+                        return configured
+
                     while not self._stop_requested:
                         self.controller.service(adapter)
+                        if self.service_timing(switch_timing):
+                            last_frame = time.monotonic()
                         buffer = session.acquirer.try_fetch(timeout=0.5)
                         if buffer is None:
                             if not source and time.monotonic() - last_frame > 5:
@@ -99,7 +131,12 @@ class GenTLCameraThread(QThread):
                             if len(components) != 1:
                                 raise RuntimeError("GenTL multi-component payloads are not supported.")
                             image, array = copy_gentl_frame(components[0], preserve_depth=True)
-                            payload = FrameData.copy(array, pixel_format=components[0].data_format)
+                            try:
+                                frame_id = int(buffers[0].module.frame_id)
+                            except Exception:
+                                frame_id = None
+                            payload = FrameData.copy(array, pixel_format=components[0].data_format,
+                                                     camera_frame_id=frame_id)
                         finally:
                             # Returning native buffers is required before stop/destroy.
                             for fetched in buffers:
