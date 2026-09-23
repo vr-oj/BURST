@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QPushButton,
     QLineEdit,
+    QMessageBox,
 )
 from ..style_constants import PANEL_STYLESHEET
 
@@ -37,6 +38,7 @@ class CameraControlPanel(QWidget):
         self._framerate_scale = 1
         self._unit_labels = {}
         self._numeric_entries = {}
+        self._control_error = ""
 
         self._auto_update_timer = QTimer(self)
         self._auto_update_timer.setInterval(500)
@@ -60,16 +62,15 @@ class CameraControlPanel(QWidget):
             panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(8)
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+        title_label = QLabel("IMAGE SETTINGS" if self._embedded else "Camera Controls")
+        title_label.setProperty("cssClass", "microLabel" if self._embedded else "panelTitle")
+        header_row.addWidget(title_label)
+        header_row.addStretch()
+        panel_layout.addLayout(header_row)
         if not self._embedded:
-            header_row = QHBoxLayout()
-            header_row.setContentsMargins(0, 0, 0, 0)
-            header_row.setSpacing(8)
-
-            title_label = QLabel("Camera Controls")
-            title_label.setProperty("cssClass", "panelTitle")
-            header_row.addWidget(title_label)
-            header_row.addStretch()
-            panel_layout.addLayout(header_row)
             panel_layout.addWidget(self._create_divider())
 
         control_grid = QGridLayout()
@@ -166,20 +167,28 @@ class CameraControlPanel(QWidget):
         self.pf_combo = QComboBox()
         self.pf_combo.setEnabled(False)
         self.pf_combo.setProperty("cssClass", "monoInput")
+        self.pf_combo.setMinimumHeight(26)
         self.pf_combo.currentIndexChanged.connect(self._on_pf_changed)
         self._add_field_row(control_grid, 3, "Pixel Format", self.pf_combo)
         self.properties_button = QPushButton("Camera properties…")
         self.properties_button.setVisible(False)
         self.properties_button.clicked.connect(self._show_properties)
-        panel_layout.addWidget(self.properties_button)
-        self.control_message = QLabel()
-        self.control_message.setWordWrap(True)
-        self.control_message.setStyleSheet("color: #f3c969;")
+        self.control_message = QPushButton("Setting not applied…")
+        self.control_message.setStyleSheet("color: #f3c969; background: transparent; border: none;")
+        self.control_message.clicked.connect(self._show_control_error)
         self.control_message.hide()
-        panel_layout.addWidget(self.control_message)
+        for button in (self.control_message, self.properties_button):
+            # These actions must not add rows or change the card's height when
+            # a connection gains capabilities or reports a long adapter error.
+            policy = button.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            button.setSizePolicy(policy)
+            header_row.addWidget(button)
         for name, spin in (("exposure", self.exposure_spin), ("gain", self.gain_spin), ("fps", self.framerate_spin)):
             entry = QLineEdit(spin.parentWidget())
             entry.setMaximumWidth(110)
+            entry.setMinimumHeight(26)
+            spin.setMinimumHeight(26)
             entry.setProperty("cssClass", "monoInput")
             spin.parentWidget().layout().insertWidget(0, entry)
             entry.hide()
@@ -278,10 +287,10 @@ class CameraControlPanel(QWidget):
         capabilities = self.controller.capabilities() if self.controller else {}
         self.properties_button.setVisible(any(key.startswith(("mm:", "mmcore:")) for key in capabilities))
         self.properties_button.setEnabled(not self.is_recording)
-        self.setToolTip(self.controller.last_error if self.controller else "")
-        error = self.controller.last_error if self.controller else ""
-        self.control_message.setText(error)
-        self.control_message.setVisible(bool(error))
+        self._control_error = self.controller.last_error if self.controller else ""
+        self.control_message.setToolTip(self._control_error)
+        self.control_message.setAccessibleDescription(self._control_error)
+        self.control_message.setVisible(bool(self._control_error))
         issues = self.controller.diagnostics().get("control_issues", {}) if self.controller else {}
         rows = (
             ("exposure", self.exposure_spin, self.exposure_slider, "_exp_scale", 1000.0, "auto_exposure"),
@@ -353,6 +362,16 @@ class CameraControlPanel(QWidget):
         self.pf_combo.setEnabled(bool(prop and prop.writable and not self.is_recording))
         self.pf_combo.setToolTip(issues.get("pixel_format", "Not exposed by this camera connection.") if prop is None else "")
         del blocker
+
+    def _show_control_error(self):
+        if self._control_error:
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("Camera setting")
+            dialog.setIcon(QMessageBox.Warning)
+            dialog.setText("The camera could not apply a setting.")
+            dialog.setInformativeText("The controls show the values reported by the camera.")
+            dialog.setDetailedText(self._control_error)
+            dialog.exec_()
 
     def _show_properties(self):
         if self.controller is not None and not self.is_recording:

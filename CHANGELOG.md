@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep camera input rows readable when Micro-Manager controls or adapter warnings
+  appear. Place camera properties and warning details in the settings heading
+  and keep recording status on one line.
 - Keep native IC4 as the primary camera connection and use Micro-Manager for
   other cameras. Remove direct Spinnaker, GenTL, OpenCV capture and external
   Python backend plugins, including their build dependencies. Micro-Manager
