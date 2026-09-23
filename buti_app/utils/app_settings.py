@@ -20,8 +20,10 @@ def save_app_setting(key, value):
         with open(SETTINGS_FILE, "w") as f:
             json.dump(settings, f, indent=4)
         log.debug(f"Saved app setting: {{'{key}': '{value}'}} to {SETTINGS_FILE}")
+        return True
     except IOError as e:
         log.error(f"Error saving settings to {SETTINGS_FILE}: {e}")
+        return False
 
 
 def load_app_setting(key, default=None):

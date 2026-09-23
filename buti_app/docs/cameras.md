@@ -12,12 +12,81 @@ startup dialogs.
 | Spinnaker | Teledyne FLIR Spinnaker runtime/drivers and its matching `PySpin` wheel |
 | Generic USB / OpenCV | A Windows UVC driver and `opencv-python` |
 | Generic GenTL | A vendor's 64-bit GenTL producer (`.cti`), its runtime/drivers, and `harvesters` / `genicam` |
+| Micro-Manager | `pymmcore`, compatible 64-bit Micro-Manager device adapters, vendor drivers, and a saved camera `.cfg` |
 | Installed SDK adapter | A Python package registered in `burst.camera_backends`, plus that adapter's SDK |
 
 The public GenTL bridge packages are included in the source requirements, but all
 backends remain optional at runtime. An arbitrary proprietary SDK cannot be driven
 without an API adapter. If it provides a compatible GenTL producer, the generic
 backend can use it; otherwise an installed adapter implements the contract below.
+
+## Micro-Manager setup for installed BURST
+
+1. Install compatible **64-bit Micro-Manager** and the vendor drivers required by
+   its camera adapter. Confirm your camera works in Micro-Manager's Live view.
+2. Save a camera hardware configuration (`.cfg`) in a permanent user folder.
+   Prefer a camera-only configuration: loading a configuration initializes **all**
+   devices named in it, including other microscope hardware. Close Micro-Manager
+   and other camera programs before using the camera in BURST.
+3. In BURST open **Acquisition → Micro-Manager Camera Setup…**. Browse to the
+   Micro-Manager folder containing its device adapters and your `.cfg` file.
+4. Choose **Load configuration and find cameras**. This runs outside the GUI
+   thread, validates configuration loading and lists its cameras, then releases
+   them. It does not certify image acquisition or timing. Select a camera, click
+   **Add selected camera**, then **Save**. Multiple configurations can be saved;
+   the same dialog removes saved entries without deleting any files.
+5. Select the saved Micro-Manager entry from **Camera Device**, keep **Camera
+   Default**, and start the preview. Geometry and pixel type initially come from
+   the configuration. Let delivery stabilize before recording. The normal 10 FPS
+   readiness check and recording lag guard apply.
+
+BURST stores configuration **paths** in per-user settings. It does not copy or
+modify the `.cfg`; leave it and its referenced resources in place. Saved entries
+are candidates, not a claim that the camera is connected. Refreshing devices does
+not load a Micro-Manager configuration or initialize microscope hardware.
+
+During preview, **Camera properties…** exposes the selected adapter's native
+property names, values, choices and reported ranges. Read-only and initialization-only
+settings cannot be edited. Exposure is also available in milliseconds; sensor ROI
+accepts `x,y,width,height` (use `0,0,0,0` to restore the full sensor). Properties may
+be rejected by a particular adapter; the dialog shows errors and applied readback.
+Changes briefly stop/restart acquisition, reset rate readiness, and last for this
+session. Save persistent settings through Micro-Manager's configuration workflow.
+Controls lock during recording. Gain units and automatic-control enums are not
+guessed: when they are not portable, use the native property panel. The normal
+exposure/frame-rate sliders appear only when the corresponding known property
+provides usable limits.
+
+The source/build requirements pin `pymmcore==12.5.0.75.0` (MMCore 12.5.0,
+device API **75**, module API **10**). Micro-Manager adapters must match that API
+and architecture. Installing an older Micro-Manager release or a mismatched SDK
+can fail even when its own GUI works. The setup error reports the bridge's required
+API. End users of a packaged build do not install Python or wheels; the release
+must include the bridge. Source users update their environment with Command Prompt:
+
+```bat
+.venv\Scripts\python.exe -m pip install -r buti_app\requirements.txt
+```
+
+Acquisition uses the MMCore sequence buffer, detects overflow, and copies images
+before native buffers can be reused. Supported images are single-channel 8/16-bit
+monochrome and packed 32-bit RGB. High-bit-depth monochrome is scaled by its reported
+bit depth to BURST's existing **8-bit preview/TIFF pipeline**; original 16-bit precision
+is not preserved. Float, RGB64 and multi-camera/channel payloads fail with an
+explanation instead of being interpreted incorrectly.
+
+Trigger settings are preserved from the configuration. Start with internal/free-running
+triggering for BURST's preview/readiness workflow. An external-trigger configuration
+without incoming pulses will time out; this integration does not implement a complete
+Arduino-triggered startup/validation workflow. MMCore's nominal sequence interval
+does not reliably set camera FPS. BURST requests 10 through `AcquisitionFrameRate`
+where exposed, otherwise the adapter's own properties/configuration set the rate,
+and measured delivery determines readiness. Passing readiness never proves exposure
+synchronization.
+
+References: [Micro-Manager Python integration](https://micro-manager.org/Using_the_Micro-Manager_python_library),
+[supported hardware](https://micro-manager.org/Device_Support),
+[MMCore API](https://micro-manager.org/apidoc/MMCore/latest/class_c_m_m_core.html).
 
 ## Teledyne FLIR / Edmund Optics setup
 
@@ -139,7 +208,7 @@ from other backends. Discovery order prefers native SDKs and installed adapters,
 
 ## Windows executable packaging
 
-`BURST.spec` bundles IC4, OpenCV and the GenTL bridge **when installed in the build
+`BURST.spec` bundles IC4, OpenCV, the GenTL bridge and `pymmcore` **when installed in the build
 environment**. An absent SDK no longer aborts a development build. It also collects
 installed `burst.camera_backends` entry-point metadata and adapter modules. Install
 adapter packages before building; the frozen executable does not search arbitrary
@@ -181,6 +250,7 @@ camera and resolution, and start the preview. Close other camera applications fi
 | IC4 camera | BURST with IC4 support plus the compatible vendor runtime/drivers. |
 | FLIR/Spinnaker camera | A Spinnaker-enabled BURST build plus the matching Spinnaker runtime/drivers. |
 | Other GenTL camera | BURST with its GenTL bridge plus a compatible vendor GenTL producer and drivers. The installer must register its producer path; otherwise support must configure it once. |
+| Micro-Manager camera | BURST with its Micro-Manager bridge, matching 64-bit device adapters and vendor drivers; select a saved `.cfg` in Camera Setup. |
 | Other proprietary SDK | A BURST release containing an adapter for that SDK, plus its required runtime/drivers. Installing an arbitrary SDK alone cannot add support. |
 
 The current BURST installer does not install vendor runtimes or provide an SDK

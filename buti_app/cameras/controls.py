@@ -77,6 +77,8 @@ class CameraController:
                 break
             try:
                 adapter.set_value(name, value)
+                with self._lock:
+                    self._last_error = ""
             except Exception as exc:
                 log.warning("Could not set camera %s: %s", name, exc)
                 with self._lock:

@@ -44,7 +44,7 @@ hidden_imports = ["PyQt5.QtMultimedia"]
 camera_binaries = []
 camera_data = []
 excluded_modules = []
-for module in ("imagingcontrol4", "cv2", "harvesters", "genicam"):
+for module in ("imagingcontrol4", "cv2", "harvesters", "genicam", "pymmcore"):
     if _optional_module(module):
         datas, binaries, imports = collect_all(module)
         camera_data.extend(datas)

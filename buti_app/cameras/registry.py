@@ -5,6 +5,7 @@ from .ic4_backend import IC4Backend
 from .opencv_backend import OpenCVBackend
 from .spinnaker_backend import SpinnakerBackend
 from .gentl_backend import GenTLBackend
+from .micro_manager_backend import MicroManagerBackend
 from .runtime import configure_dll_paths
 
 log = logging.getLogger(__name__)
@@ -12,7 +13,7 @@ log = logging.getLogger(__name__)
 
 class CameraRegistry:
     """Built-in and installed camera adapters share the same UI contract."""
-    backend_types = (IC4Backend, SpinnakerBackend, GenTLBackend, OpenCVBackend)
+    backend_types = (IC4Backend, SpinnakerBackend, GenTLBackend, MicroManagerBackend, OpenCVBackend)
 
     def __init__(self, backend_filter="auto", importer=importlib.import_module, plugin_entries=None):
         configure_dll_paths()
@@ -49,6 +50,11 @@ class CameraRegistry:
                     log.warning("Camera adapter %s unavailable: %s", entry.name, exc)
         except Exception as exc:
             log.warning("Installed camera adapter discovery failed: %s", exc)
+
+    def set_micro_manager_profiles(self, profiles):
+        backend = self.backends.get("micromanager")
+        if backend is not None:
+            backend.profiles = [dict(p) for p in profiles if isinstance(p, dict)] if isinstance(profiles, list) else []
 
     def discover_cameras(self):
         devices = []

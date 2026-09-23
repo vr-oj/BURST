@@ -2,7 +2,7 @@ import logging
 import math
 from typing import Optional
 
-from PyQt5.QtCore import Qt, QTimer, QSignalBlocker
+from PyQt5.QtCore import Qt, QTimer, QSignalBlocker, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget,
     QFrame,
@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QSlider,
     QSizePolicy,
+    QPushButton,
 )
 from ..style_constants import PANEL_STYLESHEET
 
@@ -22,6 +23,8 @@ log = logging.getLogger(__name__)
 
 
 class CameraControlPanel(QWidget):
+    camera_settings_changed = pyqtSignal()
+
     def __init__(self, parent=None, *, embedded=False):
         super().__init__(parent)
         self._embedded = bool(embedded)
@@ -162,6 +165,10 @@ class CameraControlPanel(QWidget):
         self.pf_combo.setProperty("cssClass", "monoInput")
         self.pf_combo.currentIndexChanged.connect(self._on_pf_changed)
         self._add_field_row(control_grid, 3, "Pixel Format", self.pf_combo)
+        self.properties_button = QPushButton("Camera properties…")
+        self.properties_button.setVisible(False)
+        self.properties_button.clicked.connect(self._show_properties)
+        panel_layout.addWidget(self.properties_button)
 
         if not self._embedded:
             panel_layout.addStretch()
@@ -252,6 +259,8 @@ class CameraControlPanel(QWidget):
 
     def _refresh_auto_values(self):
         capabilities = self.controller.capabilities() if self.controller else {}
+        self.properties_button.setVisible(any(key.startswith(("mm:", "mmcore:")) for key in capabilities))
+        self.properties_button.setEnabled(not self.is_recording)
         self.setToolTip(self.controller.last_error if self.controller else "")
         rows = (
             ("exposure", self.exposure_spin, self.exposure_slider, "_exp_scale", 1000.0, "auto_exposure"),
@@ -304,9 +313,15 @@ class CameraControlPanel(QWidget):
         self.pf_combo.setEnabled(bool(prop and prop.writable and not self.is_recording))
         del blocker
 
+    def _show_properties(self):
+        if self.controller is not None and not self.is_recording:
+            from ui.camera_properties_dialog import CameraPropertiesDialog
+            CameraPropertiesDialog(self).exec_()
+
     def _set_value(self, name, value):
         if self.controller is not None and not self.is_recording:
             self.controller.set_value(name, value)
+            self.camera_settings_changed.emit()
 
     def _on_exposure_changed(self, value):
         self._set_value("exposure", float(value) * self._exp_unit_factor)

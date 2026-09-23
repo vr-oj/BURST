@@ -47,3 +47,8 @@ class CameraPackagingTests(unittest.TestCase):
     def test_explicit_pyspin_request_explains_missing_wheel(self):
         with self.assertRaisesRegex(SystemExit, "matching PySpin wheel"):
             self.run_spec(bundle=True)
+
+    def test_micro_manager_binding_is_bundled_when_available(self):
+        analysis, _ = self.run_spec({"pymmcore"})
+        self.assertIn("pymmcore", analysis["hiddenimports"])
+        self.assertNotIn("pymmcore", analysis["excludes"])

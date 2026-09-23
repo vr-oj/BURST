@@ -29,6 +29,11 @@
 
 ### High-Speed Camera Preview & Control
 - Automatically lists IC4, FLIR/Spinnaker, generic USB/OpenCV, and installed GenTL cameras together.
+- Add Micro-Manager cameras through **Acquisition → Micro-Manager Camera Setup…**.
+  Select the installation and a saved `.cfg`, load it, add a camera, and save.
+  Adapter-specific controls are available through **Camera properties…** during preview.
+  Compatible Micro-Manager adapters and vendor drivers must be installed; users do
+  not need to copy files into BURST's installation folder. See [camera setup](buti_app/docs/cameras.md).
 - Supports additional installed SDK adapters without changing the camera UI.
 - Enables exposure, gain, auto modes, and frame rate controls according to device capabilities.
 - See [camera SDK installation, compatibility, and packaging](buti_app/docs/cameras.md).
@@ -90,7 +95,7 @@ BURST relies on a hardware-triggered acquisition model driven by the BUTI Arduin
 | Component | Role |
 |-----------|------|
 | **BUTI Arduino Box** | Master clock that sends trigger pulses and serial messages |
-| **Camera**  | Triggered by the BUTI Arduino Box `CamTrig` line |
+| **Camera**  | Trigger capability depends on camera, wiring, and backend configuration; rate readiness does not verify hardware synchronization |
 | **App**     | Listens for the first BUTI Arduino Box message, then records video + CSV |
 
 Each cycle:

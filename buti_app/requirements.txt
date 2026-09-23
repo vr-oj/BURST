@@ -23,6 +23,9 @@ opencv-python==4.12.0.88
 harvesters==1.4.3
 genicam==1.5.1
 
+# ---- Micro-Manager bridge (device adapters and vendor drivers remain external) ----
+pymmcore==12.5.0.75.0
+
 # ---- OpenGL (Python bindings; needs GPU drivers at runtime) ----
 PyOpenGL==3.1.9
 PyOpenGL-accelerate==3.1.9

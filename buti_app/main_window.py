@@ -177,6 +177,7 @@ class MainWindow(QMainWindow):
         self.force_plot_widget = None
 
         self.camera_registry = CameraRegistry(config.CAMERA_BACKEND)
+        self.camera_registry.set_micro_manager_profiles(load_app_setting("micro_manager_profiles", []))
         self._init_paths_and_icons()
         self._init_completion_sound()
         self._build_console_log_dock()
@@ -189,6 +190,7 @@ class MainWindow(QMainWindow):
         self._populate_device_list()
         self._set_initial_control_states()
         self.camera_info_panel.rate_help_button.clicked.connect(self._show_camera_rate_help)
+        self.camera_control_panel.camera_settings_changed.connect(self._camera_rate_monitor.reset)
         self._camera_rate_timer = QTimer(self)
         self._camera_rate_timer.setInterval(1000)
         self._camera_rate_timer.timeout.connect(self._update_camera_rate_status)
@@ -667,6 +669,30 @@ class MainWindow(QMainWindow):
             )
             self._refresh_recording_button_states()
 
+    def _setup_micro_manager(self):
+        if self._recording_state != "idle" or self.camera_thread is not None:
+            QMessageBox.information(self, "Stop Camera First", "Stop recording and stop the camera before changing Micro-Manager configurations.")
+            return
+        from ui.micro_manager_setup import MicroManagerSetupDialog
+        from cameras.micro_manager_backend import PROFILE_SETTING
+        backend = self.camera_registry.backends.get("micromanager")
+        profiles = load_app_setting(PROFILE_SETTING, [])
+        dialog = MicroManagerSetupDialog(backend.sdk if backend else None,
+            profiles if isinstance(profiles, list) else [], self,
+            self.camera_registry.unavailable.get("micromanager", ""))
+        if dialog.exec_() == QDialog.Accepted:
+            if save_app_setting(PROFILE_SETTING, dialog.profiles) is False:
+                QMessageBox.warning(self, "Settings Could Not Be Saved", "BURST could not save the camera configuration locations. Check access to your user settings folder.")
+                return
+            self.camera_registry.set_micro_manager_profiles(dialog.profiles)
+            self._populate_device_list()
+            if dialog.profiles:
+                for i in range(self.device_combo.count()):
+                    device = self.device_combo.itemData(i)
+                    if device and device.backend == "micromanager" and device.native_info == dialog.profiles[-1]:
+                        self.device_combo.setCurrentIndex(i)
+                        break
+
     def _camera_rate_check(self):
         controller = getattr(self.camera_thread, "controller", None)
         capabilities = controller.capabilities() if controller else {}
@@ -775,6 +801,9 @@ class MainWindow(QMainWindow):
         fm.addAction(exit_act)
 
         am = mb.addMenu("&Acquisition")
+        self.micro_manager_setup_action = QAction("Micro-Manager Camera Setup…", self,
+                                                triggered=self._setup_micro_manager)
+        am.addAction(self.micro_manager_setup_action)
         self.recording_action = QAction(
             self.icon_record_start,
             "Start &Recording",

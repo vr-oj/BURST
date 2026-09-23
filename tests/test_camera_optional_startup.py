@@ -14,7 +14,7 @@ import importlib.abc
 import sys
 class BlockCameraSDKs(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'imagingcontrol4', 'PySpin', 'cv2', 'harvesters', 'genicam'}:
+        if fullname.split('.')[0] in {'imagingcontrol4', 'PySpin', 'cv2', 'harvesters', 'genicam', 'pymmcore'}:
             raise ImportError('deliberately unavailable for startup test')
 sys.meta_path.insert(0, BlockCameraSDKs())
 sys.path.insert(0, 'buti_app')
