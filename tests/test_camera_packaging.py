@@ -52,3 +52,4 @@ class CameraPackagingTests(unittest.TestCase):
         analysis, _ = self.run_spec({"pymmcore"})
         self.assertIn("pymmcore", analysis["hiddenimports"])
         self.assertNotIn("pymmcore", analysis["excludes"])
+        self.assertIn(os.path.join("buti_app", "hooks", "mm_worker_bootstrap.py"), analysis["runtime_hooks"])

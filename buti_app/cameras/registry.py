@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 from importlib.metadata import entry_points
 import logging
 from .ic4_backend import IC4Backend
@@ -25,7 +26,13 @@ class CameraRegistry:
             if not selected.intersection({"", "auto", "all", key}):
                 continue
             try:
-                sdk = importer(backend_type.module_name)
+                if backend_type is MicroManagerBackend and importer is importlib.import_module:
+                    # Do not load MMCore's C++ runtime beside Qt/vendor SDKs.
+                    if importlib.util.find_spec("pymmcore") is None:
+                        raise ImportError("pymmcore is not included in this BURST installation")
+                    sdk = True  # Availability marker; the helper performs the import.
+                else:
+                    sdk = importer(backend_type.module_name)
                 self.backends[key] = backend_type(sdk)
                 log.info("Camera backend %s: available", key)
             except Exception as exc:

@@ -2,7 +2,11 @@
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFileDialog, QComboBox, QListWidget, QDialogButtonBox)
-from cameras.micro_manager_backend import MicroManagerSession, validate_profile, installation_candidates
+import logging
+from cameras.micro_manager_backend import validate_profile, installation_candidates
+from cameras.micro_manager_process import MicroManagerClient, MicroManagerCancelled
+
+log = logging.getLogger(__name__)
 
 
 class ConfigurationProbe(QThread):
@@ -15,12 +19,16 @@ class ConfigurationProbe(QThread):
 
     def run(self):
         try:
-            with MicroManagerSession(self.sdk, self.profile) as session:
-                cameras = list(session.core.getLoadedDevicesOfType(self.sdk.CameraDevice))
-                details = {"cameras": cameras, "selected": session.camera,
-                           "version": session.core.getVersionInfo(), "api": session.core.getAPIVersionInfo()}
+            log.info("Loading Micro-Manager configuration in isolated helper: %s (adapters: %s)",
+                     self.profile["config"], self.profile["installation"])
+            with MicroManagerClient(cancelled=self.isInterruptionRequested) as client:
+                details = client.request("probe", self.profile)
+            log.info("Micro-Manager configuration loaded: %s", details)
             self.result.emit(details)
+        except MicroManagerCancelled:
+            pass
         except Exception as exc:
+            log.exception("Micro-Manager configuration probe failed")
             self.failed.emit(str(exc))
 
 
@@ -30,6 +38,7 @@ class MicroManagerSetupDialog(QDialog):
         self.sdk = sdk
         self.profiles = [dict(p) for p in profiles if isinstance(p, dict)]
         self.worker = None
+        self._cancel_requested = False
         self.validated = None
         self.setWindowTitle("Micro-Manager Camera Setup")
         self.resize(720, 520)
@@ -108,6 +117,7 @@ class MicroManagerSetupDialog(QDialog):
             return
         path, _ = QFileDialog.getOpenFileName(self, "Micro-Manager configuration", self.config.text(), "Hardware configurations (*.cfg)")
         if path:
+            log.info("Selected Micro-Manager configuration: %s", path)
             self.config.setText(path)
 
     def _invalidate(self):
@@ -125,10 +135,11 @@ class MicroManagerSetupDialog(QDialog):
             return
         self._invalidate()
         self._pending_profile = profile
+        self._cancel_requested = False
         self.test.setEnabled(False)
         self.installation.setReadOnly(True)
         self.config.setReadOnly(True)
-        self.buttons.setEnabled(False)
+        self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
         self.status.setText("Loading configuration… Waiting for the camera driver. This may take a few seconds.")
         self.worker = ConfigurationProbe(self.sdk, profile, self)
         self.worker.result.connect(self._loaded)
@@ -157,7 +168,10 @@ class MicroManagerSetupDialog(QDialog):
         self.installation.setReadOnly(False)
         self.config.setReadOnly(False)
         self.buttons.setEnabled(True)
+        self.buttons.button(QDialogButtonBox.Save).setEnabled(True)
         self.add.setEnabled(self.validated is not None)
+        if self._cancel_requested:
+            super().reject()
 
     def _add(self):
         if self.validated is None or not self.cameras.currentText():
@@ -175,9 +189,14 @@ class MicroManagerSetupDialog(QDialog):
     def reject(self):
         if self.worker is None:
             super().reject()
+        else:
+            self._cancel_requested = True
+            self.worker.requestInterruption()
+            self.status.setText("Cancelling camera setup and closing its helper…")
 
     def closeEvent(self, event):
         if self.worker is not None:
+            self.reject()
             event.ignore()
         else:
             super().closeEvent(event)

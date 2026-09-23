@@ -5,7 +5,7 @@ import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QImage
 from cameras.controls import CameraController
-from cameras.micro_manager_backend import MicroManagerSession, MicroManagerControls
+from cameras.micro_manager_process import MicroManagerClient, RemoteMicroManagerControls, MicroManagerCancelled
 
 log = logging.getLogger(__name__)
 
@@ -33,9 +33,10 @@ class MMCoreCameraThread(QThread):
     frame_ready = pyqtSignal(QImage, object)
     error = pyqtSignal(str, str)
 
-    def __init__(self, parent=None, *, sdk, profile):
+    def __init__(self, parent=None, *, sdk=None, profile, client_factory=MicroManagerClient):
         super().__init__(parent)
         self.sdk, self.profile = sdk, dict(profile)
+        self.client_factory = client_factory
         self.controller = CameraController()
         self._stop_requested = False
 
@@ -48,43 +49,32 @@ class MMCoreCameraThread(QThread):
 
     def run(self):
         try:
-            with MicroManagerSession(self.sdk, self.profile) as session:
-                adapter = MicroManagerControls(session)
+            log.info("Starting isolated Micro-Manager camera: %s", self.profile)
+            with self.client_factory(cancelled=lambda: self._stop_requested) as client:
+                snapshot = client.request("open", self.profile)
+                adapter = RemoteMicroManagerControls(client, snapshot)
                 try:
-                    # Preserve adapter-specific trigger settings from the configuration.
-                    # Request 10 Hz only where the adapter names the SFNC rate property.
-                    controls = adapter.read_controls()
-                    fps = controls.get("mm:AcquisitionFrameRate")
-                    if fps and fps.writable:
-                        try:
-                            adapter.set_value("mm:AcquisitionFrameRate", "10")
-                        except Exception as exc:
-                            log.warning("Micro-Manager could not request 10 FPS: %s", exc)
                     if self._stop_requested:
                         return
-                    session.start()
                     self.controller.open(adapter)
                     self.grabber_ready.emit()
                     last_frame = time.monotonic()
                     while not self._stop_requested:
                         self.controller.service(adapter)
-                        if session.core.isBufferOverflowed():
-                            raise RuntimeError("Micro-Manager image buffer overflow. Reduce acquisition rate or resolution.")
-                        if session.core.getRemainingImageCount():
-                            components = session.core.getNumberOfComponents()
-                            bit_depth = session.core.getImageBitDepth()
-                            frame = np.array(session.core.popNextImage(), copy=True)
+                        payload = client.request("next", timeout=10)
+                        if payload is not None:
+                            frame, components, bit_depth = payload
                             image, array = copy_mm_frame(frame, components, bit_depth)
                             last_frame = time.monotonic()
                             self.frame_ready.emit(image, array)
                         else:
-                            if not session.core.isSequenceRunning():
-                                raise RuntimeError("The camera stopped sequence acquisition.")
                             if time.monotonic() - last_frame > 5:
                                 raise RuntimeError("No images for five seconds. Check exposure, connection and configured trigger source. Use internal/free-running triggering for preview.")
                             self.msleep(5)
                 finally:
                     self.controller.close()
+        except MicroManagerCancelled:
+            pass
         except Exception as exc:
             log.exception("Micro-Manager acquisition failed")
             if not self._stop_requested:

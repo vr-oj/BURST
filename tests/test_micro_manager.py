@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "buti_app"))
 from cameras.micro_manager_backend import MicroManagerBackend, MicroManagerSession, MicroManagerControls
 from cameras.registry import CameraRegistry
 from cameras.controls import CameraController
+from cameras.micro_manager_process import MicroManagerService, MicroManagerClient
 from threads.mmcore_camera_thread import MMCoreCameraThread, copy_mm_frame
 from ui.micro_manager_setup import MicroManagerSetupDialog
 from ui.control_panels.camera_control_panel import CameraControlPanel
@@ -54,6 +55,21 @@ def fake_core():
     return core, NS(CMMCore=lambda: core, CameraDevice=2)
 
 
+class LocalClient:
+    """Exercise RPC operations against a fake SDK without opening real hardware."""
+    def __init__(self, sdk, **kwargs):
+        self.service = MicroManagerService(sdk)
+
+    def __enter__(self):
+        return self
+
+    def request(self, method, *args, **kwargs):
+        return self.service.dispatch(method, args)
+
+    def __exit__(self, *args):
+        self.service.close()
+
+
 class MicroManagerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -66,6 +82,14 @@ class MicroManagerTests(unittest.TestCase):
         config.write_text("# Test configuration", encoding="utf-8")
         self.profile = dict(installation=self.directory.name, config=str(config), camera="Camera")
         self.core, self.sdk = fake_core()
+        self.client_patch = patch("ui.micro_manager_setup.MicroManagerClient",
+                                  side_effect=lambda **kw: LocalClient(self.sdk))
+        self.client_patch.start()
+        self.addCleanup(self.client_patch.stop)
+
+    def thread(self, sdk=None):
+        return MMCoreCameraThread(profile=self.profile,
+            client_factory=lambda **kw: LocalClient(sdk or self.sdk))
 
     def test_registry_profiles_do_not_open_hardware_on_refresh(self):
         registry = CameraRegistry("micromanager", importer=lambda _: self.sdk, plugin_entries=[])
@@ -127,7 +151,7 @@ class MicroManagerTests(unittest.TestCase):
             self.assertEqual(adapter.read_controls()["mm:Gain"].value, "3")
 
     def test_thread_owns_frame_and_cleans_up(self):
-        thread = MMCoreCameraThread(sdk=self.sdk, profile=self.profile)
+        thread = self.thread()
         frames, errors = [], []
         def receive(image, raw):
             frames.append((image, raw))
@@ -154,7 +178,7 @@ class MicroManagerTests(unittest.TestCase):
                 core.isBufferOverflowed.return_value = overflow
                 core.getRemainingImageCount.return_value = 0
                 core.isSequenceRunning.return_value = False
-                thread = MMCoreCameraThread(sdk=sdk, profile=self.profile)
+                thread = self.thread(sdk)
                 errors = []
                 thread.error.connect(lambda *args: errors.append(args))
                 thread.run()
@@ -164,7 +188,7 @@ class MicroManagerTests(unittest.TestCase):
 
     def test_partial_start_failure_still_stops_camera(self):
         self.core.startSequenceAcquisition.side_effect = RuntimeError("start failed")
-        thread = MMCoreCameraThread(sdk=self.sdk, profile=self.profile)
+        thread = self.thread()
         thread.run()
         self.core.stopSequenceAcquisition.assert_called_once()
         self.core.unloadAllDevices.assert_called_once()
@@ -172,7 +196,7 @@ class MicroManagerTests(unittest.TestCase):
     def test_missing_trigger_pulses_time_out_without_blocking_fetch(self):
         self.core.getRemainingImageCount.return_value = 0
         self.core.isSequenceRunning.return_value = True
-        thread = MMCoreCameraThread(sdk=self.sdk, profile=self.profile)
+        thread = self.thread()
         errors = []
         thread.error.connect(lambda *args: errors.append(args))
         with patch.object(thread.controller, "service"), \
@@ -184,7 +208,7 @@ class MicroManagerTests(unittest.TestCase):
 
     def test_multiple_channels_are_not_silently_paired_as_one_camera(self):
         self.core.getNumberOfCameraChannels.return_value = 2
-        thread = MMCoreCameraThread(sdk=self.sdk, profile=self.profile)
+        thread = self.thread()
         errors = []
         thread.error.connect(lambda *args: errors.append(args))
         thread.run()

@@ -31,7 +31,7 @@ backend can use it; otherwise an installed adapter implements the contract below
 3. In BURST open **Acquisition → Micro-Manager Camera Setup…**. Browse to the
    Micro-Manager folder containing its device adapters and your `.cfg` file.
 4. Choose **Load configuration and find cameras**. This runs outside the GUI
-   thread, validates configuration loading and lists its cameras, then releases
+   thread in an isolated helper process, validates configuration loading and lists its cameras, then releases
    them. It does not certify image acquisition or timing. Select a camera, click
    **Add selected camera**, then **Save**. Multiple configurations can be saved;
    the same dialog removes saved entries without deleting any files.
@@ -44,6 +44,16 @@ BURST stores configuration **paths** in per-user settings. It does not copy or
 modify the `.cfg`; leave it and its referenced resources in place. Saved entries
 are candidates, not a claim that the camera is connected. Refreshing devices does
 not load a Micro-Manager configuration or initialize microscope hardware.
+
+Micro-Manager's native libraries run in a separate helper process during both setup
+and acquisition. This keeps them separate from Qt and BURST's native SDK backends.
+A crashed or unresponsive adapter reports an error with its helper exit code and
+available driver diagnostics instead of closing BURST. Configuration loading has
+a 30-second response timeout; acquisition/control requests have 10-second timeouts.
+Cancel in the setup dialog closes its helper. An unresponsive helper is terminated
+after a bounded cleanup wait. Vendor drivers may still need recovery after a native
+crash. No network service is used; images and commands use a private inherited pipe.
+Vendor runtime search paths are configured inside the helper.
 
 During preview, **Camera properties…** exposes the selected adapter's native
 property names, values, choices and reported ranges. Read-only and initialization-only
