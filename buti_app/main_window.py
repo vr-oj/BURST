@@ -42,6 +42,7 @@ from PyQt5.QtCore import (
     QThread,
     QMetaObject,
     QProcess,
+    QSignalBlocker,
 )
 from PyQt5.QtGui import QIcon, QKeySequence, QImage, QDesktopServices
 from PyQt5.QtCore import QUrl
@@ -111,6 +112,7 @@ from utils.utils import list_serial_ports
 from playback_window import PlaybackWindow
 
 log = logging.getLogger(__name__)
+CAMERA_SETUP_ROLE = Qt.UserRole + 1
 
 
 class MainWindow(QMainWindow):
@@ -166,6 +168,7 @@ class MainWindow(QMainWindow):
 
         # Camera‐related
         self.device_combo = None
+        self._selected_camera_index = 0
         self.resolution_combo = None
         self.btn_start_camera = None
         self.camera_widget = None
@@ -326,8 +329,12 @@ class MainWindow(QMainWindow):
 
         self.camera_info_panel = CameraInfoPanel(self)
         self.device_combo = QComboBox(self)
+        self.device_combo.view().setStyleSheet(
+            "QAbstractItemView { background: #454545; color: #ffffff; "
+            "selection-background-color: #3DBD7D; selection-color: #0B1014; }")
         self.device_combo.addItem("Choose camera…", None)
         self.device_combo.currentIndexChanged.connect(self._on_device_selected)
+        self.device_combo.activated[int].connect(self._on_camera_device_activated)
 
         self.resolution_combo = QComboBox(self)
         self.resolution_combo.addItem("Choose resolution…", None)
@@ -465,6 +472,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Stop the camera before refreshing devices.", 3000)
             return
         previous = self.device_combo.currentData()
+        blocker = QSignalBlocker(self.device_combo)
         self.device_combo.clear()
         self.device_combo.addItem("Choose camera…", None)
         selected = 0
@@ -472,8 +480,16 @@ class MainWindow(QMainWindow):
             self.device_combo.addItem(device.display_name, device)
             if previous and (device.backend, device.id) == (previous.backend, previous.id):
                 selected = self.device_combo.count() - 1
-        if selected or self.device_combo.count() == 2:
-            self.device_combo.setCurrentIndex(selected or 1)
+        camera_count = self.device_combo.count() - 1
+        if camera_count:
+            self.device_combo.insertSeparator(self.device_combo.count())
+        self.device_combo.addItem("Micro-Manager Camera Setup…", None)
+        self.device_combo.setItemData(self.device_combo.count() - 1, True, CAMERA_SETUP_ROLE)
+        self.device_combo.setItemData(self.device_combo.count() - 1,
+            "Add or manage Micro-Manager cameras. Stop the camera before opening setup.", Qt.ToolTipRole)
+        self.device_combo.setCurrentIndex(selected or (1 if camera_count == 1 else 0))
+        del blocker
+        self._on_device_selected(self.device_combo.currentIndex())
         self._fit_combo_popup(self.device_combo)
 
     def _refresh_serial_port_list(self):
@@ -499,6 +515,11 @@ class MainWindow(QMainWindow):
     @pyqtSlot(int)
     def _on_device_selected(self, index):
         """Populate modes through the selected backend, with no native SDK objects."""
+        if self.device_combo.itemData(index, CAMERA_SETUP_ROLE):
+            # Wait for activation before restoring the displayed selection;
+            # changing it here would suppress Qt's activated signal.
+            return
+        self._selected_camera_index = max(0, index)
         if self.camera_widget is not None:
             self.camera_widget.clear_roi()
         device = self.device_combo.itemData(index)
@@ -514,6 +535,15 @@ class MainWindow(QMainWindow):
             if self.resolution_combo.count() > 1:
                 self.resolution_combo.setCurrentIndex(1)
         self._fit_combo_popup(self.resolution_combo)
+
+    @pyqtSlot(int)
+    def _on_camera_device_activated(self, index):
+        if self.device_combo.itemData(index, CAMERA_SETUP_ROLE):
+            # Setup is an action, not a camera. Keep resolution, ROI and timing.
+            blocker = QSignalBlocker(self.device_combo)
+            self.device_combo.setCurrentIndex(self._selected_camera_index)
+            del blocker
+            self._setup_micro_manager()
 
     @pyqtSlot()
     def _on_camera_configuration_changed(self):
@@ -930,9 +960,6 @@ class MainWindow(QMainWindow):
             self.capture_mode_group.addAction(action)
             capture_menu.addAction(action)
             self.capture_mode_actions[mode] = action
-        self.micro_manager_setup_action = QAction("Micro-Manager Camera Setup…", self,
-                                                triggered=self._setup_micro_manager)
-        advanced.addAction(self.micro_manager_setup_action)
         self.recording_action = QAction(
             self.icon_record_start,
             "Start &Recording",
@@ -1066,7 +1093,7 @@ class MainWindow(QMainWindow):
         camera_group_layout.addWidget(camera_label)
         self.device_combo.setMinimumWidth(250)
         self.device_combo.setMaximumWidth(370)
-        self.device_combo.setToolTip("Select the camera device")
+        self.device_combo.setToolTip("Select a camera, or choose Micro-Manager Camera Setup to add one.")
         camera_group_layout.addWidget(self.device_combo)
 
         resolution_label = QLabel("Resolution")

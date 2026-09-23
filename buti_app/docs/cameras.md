@@ -21,7 +21,8 @@ expose the required camera features. Both integrations remain optional at runtim
 1. Install compatible **64-bit Micro-Manager** and the vendor drivers required by
    its camera adapter. Confirm your camera works in Micro-Manager's Live view.
 2. Close Micro-Manager and other camera programs. In BURST open
-   **Acquisition → Advanced → Micro-Manager Camera Setup…**. The installation from
+   the **Camera Device** dropdown and choose its last item, **Micro-Manager Camera Setup…**.
+   Stop the camera first if it is streaming. The installation from
    a saved connection is reused; BURST also looks in standard installation folders.
    Use **Change folder…** if needed and choose **Find cameras**. IC4 cameras
    connect directly and do not require this setup.

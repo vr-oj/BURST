@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtTest import QTest
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QApplication
 
@@ -66,9 +67,29 @@ class CameraLifecycleUiTests(unittest.TestCase):
         with patch.object(main_window, "CameraRegistry", return_value=registry):
             window = main_window.MainWindow()
         try:
-            self.assertEqual(window.device_combo.count(), 3)
+            self.assertEqual(window.device_combo.count(), 5)
+            setup_index = window.device_combo.count() - 1
+            self.assertEqual(window.device_combo.itemText(setup_index), "Micro-Manager Camera Setup…")
             window.device_combo.setCurrentIndex(2)
             registry.list_modes.assert_called_with(devices[1])
+            window._hardware_trigger_source = ""
+            window.timing_action.setChecked(True)
+            resolution = window.resolution_combo.currentData()
+            mode_reads = registry.list_modes.call_count
+            with patch.object(window, "_setup_micro_manager") as setup, \
+                    patch.object(window.camera_widget, "clear_roi") as clear_roi:
+                window.device_combo.showPopup()
+                popup = window.device_combo.view()
+                popup.setCurrentIndex(popup.model().index(setup_index, 0))
+                QTest.keyClick(popup, Qt.Key_Return)
+                self.app.processEvents()
+                setup.assert_called_once_with()
+                clear_roi.assert_not_called()
+            self.assertEqual(window.device_combo.currentData(), devices[1])
+            self.assertEqual(window.resolution_combo.currentData(), resolution)
+            self.assertEqual(registry.list_modes.call_count, mode_reads)
+            self.assertEqual(window._hardware_trigger_source, "")
+            self.assertTrue(window.timing_action.isChecked())
             window._on_start_stop_camera()
             thread = window.camera_thread
             self.wait_for(lambda: window._last_camera_frame_monotonic is not None)
@@ -95,6 +116,8 @@ class CameraLifecycleUiTests(unittest.TestCase):
             self.assertIsNone(window.camera_control_panel.controller)
             window._populate_device_list()
             self.assertEqual(window.device_combo.currentData().id, "2")
+            self.assertEqual(window.device_combo.itemText(window.device_combo.count() - 1),
+                             "Micro-Manager Camera Setup…")
         finally:
             window.close()
             self.app.processEvents()

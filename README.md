@@ -32,7 +32,7 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
 
 ### High-Speed Camera Preview & Control
 - Lists native IC4 cameras first, followed by saved Micro-Manager camera connections.
-- Add Micro-Manager cameras through **Acquisition → Advanced → Micro-Manager Camera Setup…**.
+- Add Micro-Manager cameras from the last item in **Camera Device → Micro-Manager Camera Setup…**.
   Use **Find cameras** or **Load configuration…**, add a camera, and save.
   Compatible cameras use the normal image controls; **Resolution** offers reported
   binning and sensor regions. Additional controls are under **Camera properties…**.

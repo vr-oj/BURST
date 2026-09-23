@@ -23,7 +23,9 @@ from main_window import MainWindow
 app = QApplication([])
 window = MainWindow()
 assert not window.camera_registry.backends
-assert window.device_combo.count() == 1
+assert window.device_combo.count() == 2
+assert window.device_combo.itemText(1) == 'Micro-Manager Camera Setup…'
+assert window.device_combo.currentIndex() == 0
 window.close()
 app.processEvents()
 print('OPTIONAL_SDK_STARTUP_OK')

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Put Micro-Manager Camera Setup at the end of the Camera Device dropdown,
+  including when no cameras are found, and remove its Acquisition menu entry.
 - Simplify Micro-Manager camera setup to finding a camera or loading a saved
   configuration, with mappings and profile sharing under Advanced options and
   technical messages under Details. Native IC4 needs no Micro-Manager setup.
