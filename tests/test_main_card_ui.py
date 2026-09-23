@@ -1,6 +1,8 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 
@@ -36,6 +38,24 @@ except ImportError:
 
 @unittest.skipIf(QApplication is None, "PyQt5 UI dependencies are unavailable")
 class MainCardUiTests(unittest.TestCase):
+    def test_recording_rate_requires_box_confirmation_and_idle_state(self):
+        from PyQt5.QtWidgets import QMessageBox
+        window = SimpleNamespace(
+            _recording_state="idle", _device_run_active=False,
+            _recording_target_fps=10, _update_camera_rate_status=Mock())
+        with patch("main_window.QMessageBox.question", return_value=QMessageBox.Cancel):
+            MainWindow._confirm_recording_rate(window, 5)
+        self.assertEqual(window._recording_target_fps, 10)
+        with patch("main_window.QMessageBox.question", return_value=QMessageBox.Yes):
+            MainWindow._confirm_recording_rate(window, 5)
+        self.assertEqual(window._recording_target_fps, 5)
+        window._update_camera_rate_status.assert_called_once()
+        window._device_run_active = True
+        with patch("main_window.QMessageBox.question") as question:
+            MainWindow._confirm_recording_rate(window, 10)
+        question.assert_not_called()
+        self.assertEqual(window._recording_target_fps, 5)
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

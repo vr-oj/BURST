@@ -42,3 +42,10 @@ class CameraRateTests(unittest.TestCase):
                 camera_rate_check=PreflightCheck("Camera rate", False, "6.83 FPS"))
         self.assertFalse(result.passed)
         self.assertEqual([c.label for c in result.failures], ["Camera rate"])
+
+    def test_five_fps_target_accepts_slower_camera_but_still_checks_capacity(self):
+        self.assertTrue(check_camera_rate(6.84, maximum=6.84, target=5).passed)
+        self.assertTrue(check_camera_rate(5, configured=5, target=5).passed)
+        self.assertFalse(check_camera_rate(4, target=5).passed)
+        self.assertFalse(check_camera_rate(6, maximum=4, target=5).passed)
+        self.assertFalse(check_camera_rate(None, target=5).passed)

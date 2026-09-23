@@ -244,7 +244,7 @@ class RecordingManager(QObject):
                 message = (
                     "Recording stopped: camera frames fell more than one second behind force samples. "
                     "Saved files need review. Reduce acquisition resolution, check exposure and "
-                    "the camera connection, then verify 10 FPS before another run."
+                    "the camera connection, then verify the camera can keep up with the Arduino box's FPS setting before another run."
                 )
                 self._frame_index_issues.append(message)
                 self.warning_occurred.emit(message)

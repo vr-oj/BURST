@@ -282,6 +282,17 @@ or check the USB connection and vendor bandwidth settings. IC4, Spinnaker and Ge
 offer smaller sensor regions where available. These may crop the field of view;
 the separate recording ROI does not reduce camera transfer bandwidth.
 
+For cameras that sustain 5 FPS but cannot sustain 10 FPS, Camera rate help offers
+**Use 5 FPS**. First set the Arduino box's camera FPS setting to 5 using its onboard
+setup (restart/setup and reconnect first if necessary), then confirm in BURST.
+BURST changes its recording target and records it in metadata; it does not send a
+rate command to the box or independently verify that setting. The camera may run
+faster: extra frames without a waiting force sample are not saved. Measurements
+at 5 FPS are 200 ms apart and may miss fast changes. Rate and backlog checks remain
+active. **Use 10 FPS** restores the default after confirming the box setting.
+Restarting BURST or reconnecting the box resets the target to 10 FPS, so confirm
+5 FPS again after reconnecting. This selection does not configure hardware triggers.
+
 During recording, more than one second of unpaired force samples stops recording
 and requests a device stop. Saved files are retained and marked for review. This
 limits accumulating lag; it cannot guarantee alignment or recover missing frames.

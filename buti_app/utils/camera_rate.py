@@ -45,7 +45,7 @@ def check_camera_rate(measured, configured=None, maximum=None, target=10.0):
 
 
 RATE_GUIDANCE = (
-    "BURST expects 10 camera frames per second to keep up with the normal force-sample rate.\n\n"
+    "BURST defaults to 10 FPS. The recording target must match the Arduino box's FPS setting.\n\n"
     "Options:\n"
     "• Request 10 FPS, then allow 5 seconds to measure again.\n"
     "• Stop the camera and choose a smaller acquisition resolution or Mono8. "
@@ -53,9 +53,13 @@ RATE_GUIDANCE = (
     "• Turn off automatic exposure and try 10 ms exposure with more light.\n"
     "• Use the camera's recommended cable and a direct USB 3 port; avoid shared hubs.\n"
     "• Check bandwidth/transfer limits in the vendor's camera utility, with BURST's camera stopped.\n\n"
-    "If the camera still cannot sustain 10 FPS, use another camera or an independently validated "
-    "acquisition setup. BURST cannot lower the Arduino's sample rate from this dialog. "
-    "A passing rate check does not prove hardware synchronization. FLIR acquisition currently "
-    "runs with triggering off. A trigger cable alone does not enable synchronization; "
+    "If the camera can sustain 5 FPS but not 10 FPS, choose Use 5 FPS and set the Arduino box "
+    "to 5 FPS in its camera FPS setup. Confirm the box setting to change BURST's recording target. "
+    "This preserves full resolution with fewer measurements (one every 200 ms). "
+    "The camera can stream faster than 5 FPS; BURST saves one image per force sample. "
+    "The target resets to 10 FPS when BURST restarts or reconnects to the box. "
+    "BURST cannot change the box setting from this dialog.\n\n"
+    "A passing rate check does not prove hardware synchronization. "
+    "A trigger cable alone does not enable synchronization; "
     "it requires compatible wiring and a configured, validated camera trigger mode."
 )

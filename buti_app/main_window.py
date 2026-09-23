@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
         self._last_recording_summary = None
         self._last_camera_frame_monotonic = None
         self._camera_rate_monitor = CameraRateMonitor()
+        self._recording_target_fps = DEFAULT_FPS
         self._completion_sound_enabled = bool(
             load_app_setting(SETTING_COMPLETION_SOUND, True)
         )
@@ -711,12 +712,12 @@ class MainWindow(QMainWindow):
         fps = capabilities.get("fps")
         measured = self._camera_rate_monitor.fps(time.monotonic())
         return check_camera_rate(measured, float(fps.value) if fps else None,
-                                 fps.maximum if fps else None, DEFAULT_FPS)
+                                 fps.maximum if fps else None, self._recording_target_fps)
 
     def _update_camera_rate_status(self):
         if self.camera_thread is None or not self.camera_thread.isRunning():
             self._camera_rate_monitor.reset()
-            self.camera_info_panel.rate_status.setText("Target: 10 FPS · Start the camera to measure delivery rate.")
+            self.camera_info_panel.rate_status.setText(f"Target: {self._recording_target_fps:g} FPS · Start the camera to measure delivery rate.")
             self.camera_info_panel.rate_status.setStyleSheet("")
             return
         measured = self._camera_rate_monitor.fps(time.monotonic())
@@ -732,12 +733,16 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("Camera Rate and Recording")
         dialog.setIcon(QMessageBox.Warning)
         dialog.setText(detail)
-        dialog.setInformativeText(RATE_GUIDANCE)
+        dialog.setInformativeText(f"Current recording target: {self._recording_target_fps:g} FPS.\n\n" + RATE_GUIDANCE)
         controller = getattr(self.camera_thread, "controller", None)
         diagnostics = controller.diagnostics() if controller else {}
         dialog.setDetailedText("Camera diagnostics:\n" + json.dumps(diagnostics, indent=2))
-        adjust = retry = None
-        if self._recording_state == "idle":
+        adjust = retry = lower = restore = None
+        if self._recording_state == "idle" and not self._device_run_active:
+            if self._recording_target_fps != 5:
+                lower = dialog.addButton("Use 5 FPS…", QMessageBox.ActionRole)
+            else:
+                restore = dialog.addButton("Use 10 FPS…", QMessageBox.ActionRole)
             adjust = dialog.addButton("Adjust camera / resolution", QMessageBox.ActionRole)
             fps = controller.capabilities().get("fps") if controller else None
             if fps and fps.writable:
@@ -746,7 +751,11 @@ class MainWindow(QMainWindow):
         dialog.setDefaultButton(close)
         dialog.exec_()
         clicked = dialog.clickedButton()
-        if retry is not None and clicked is retry:
+        if lower is not None and clicked is lower:
+            self._confirm_recording_rate(5)
+        elif restore is not None and clicked is restore:
+            self._confirm_recording_rate(10)
+        elif retry is not None and clicked is retry:
             controller.set_value("fps", float(DEFAULT_FPS))
             self._camera_rate_monitor.reset()
             self.statusBar().showMessage("Requested 10 FPS. Wait 5 seconds, then retry recording.", 6000)
@@ -754,6 +763,25 @@ class MainWindow(QMainWindow):
             if self.camera_thread is not None and self.camera_thread.isRunning():
                 self._on_start_stop_camera()
             self.statusBar().showMessage("Once the camera stops, choose a smaller acquisition resolution and restart it.", 10000)
+
+    def _confirm_recording_rate(self, target):
+        if self._recording_state != "idle" or self._device_run_active:
+            return
+        answer = QMessageBox.question(
+            self, f"Set the Arduino box to {target:g} FPS",
+            f"On the Arduino box, select {target:g} FPS in its camera FPS setup. "
+            "If needed, restart the box to reach setup, then reconnect it in BURST before continuing.\n\n"
+            f"This uses {target:g} force samples and saved images per second. "
+            "The camera may stream faster; BURST saves one available image per force sample. "
+            "At 5 FPS, measurements are 200 ms apart, so fast changes may be missed.\n\n"
+            "BURST cannot change or verify the box setting here. This does not enable hardware synchronization.\n\n"
+            f"Have you set the box to {target:g} FPS?",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+        if answer != QMessageBox.Yes:
+            return
+        self._recording_target_fps = target
+        self._update_camera_rate_status()
+        log.info("User confirmed Arduino box recording rate: %s FPS", target)
 
     @pyqtSlot(str, str)
     def _on_camera_error(self, msg: str, code: str):
@@ -1367,6 +1395,7 @@ class MainWindow(QMainWindow):
                 return
 
             self._serial_start_sent = False
+            self._recording_target_fps = DEFAULT_FPS
             self._buti_settings = {}
             self._buti_settings_received_at = None
             log.info(f"Starting SerialThread on port: {port}")
@@ -1744,7 +1773,8 @@ class MainWindow(QMainWindow):
             "run": os.path.basename(outdir),
             "camera_resolution": resolution,
             "camera_rate": {
-                "target_fps": DEFAULT_FPS,
+                "target_fps": self._recording_target_fps,
+                "target_source": "user_confirmed_box_setting" if self._recording_target_fps != DEFAULT_FPS else "default",
                 "measured_delivery_fps": self._camera_rate_monitor.fps(time.monotonic()),
                 "diagnostics": self.camera_thread.controller.diagnostics() if self.camera_thread else {},
                 "pairing": "arrival_order_not_hardware_synchronized",
