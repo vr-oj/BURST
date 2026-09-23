@@ -69,9 +69,13 @@ input, electrically compatible wiring, a supported adapter, and a validated setu
 BURST reuses the camera's selected physical Line input, or selects its only available
 physical Line input. If several inputs exist and none is selected, configure the wired
 input once in Camera properties or the vendor utility. BURST cannot detect which
-wire is connected. It requests FrameStart / RisingEdge / that input / TriggerMode On and verifies readback
-after acquisition starts. IC4, Spinnaker, GenTL and Micro-Manager adapters exposing
-these properties are supported; incompatible adapters report an error. Generic
+wire is connected. GenICam interfaces request FrameStart / RisingEdge / that input /
+TriggerMode On and verify readback after acquisition starts. The IC4 DMK 37BUX250
+uses its documented fixed input instead of a selectable source. Micro-Manager
+translates its adapter's property names; TIScam uses Internal/External and cannot
+report the input, selector or edge. Those settings require native configuration and
+validation and are listed as unexposed in the manifest. See [camera adapter details](cameras.md#frame-rate-and-trigger-timing).
+Incompatible adapters report an error. Generic
 OpenCV cameras remain usable in Software pairing mode.
 
 Use **ZERO on the box** before each triggered recording and keep the box stopped

@@ -56,6 +56,7 @@ class MMCoreCameraThread(TimingCameraThread):
                 source = getattr(self, "hardware_trigger_source", "")
                 snapshot = client.request("open", self.profile, source)
                 self.trigger_configuration = snapshot.get("trigger_configuration", {})
+                self.trigger_input = snapshot.get("trigger_input")
                 adapter = RemoteMicroManagerControls(client, snapshot)
                 try:
                     if self._stop_requested:
@@ -68,6 +69,7 @@ class MMCoreCameraThread(TimingCameraThread):
                         nonlocal source
                         updated = client.request("timing", requested)
                         source = requested
+                        self.trigger_input = updated.get("trigger_input")
                         log.info("Micro-Manager acquisition timing: %s", updated["trigger_configuration"] or "preview")
                         return updated["trigger_configuration"]
 

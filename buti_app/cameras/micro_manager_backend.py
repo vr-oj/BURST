@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .controls import CameraControl
 from .models import CameraDeviceInfo, CameraMode
+from .micro_manager_trigger import MicroManagerTrigger
 
 log = logging.getLogger(__name__)
 PROFILE_SETTING = "micro_manager_profiles"
@@ -56,6 +57,7 @@ class MicroManagerSession:
                 raise RuntimeError("The configuration has no selected camera. Configure a camera in Micro-Manager first.")
             self.core.setCameraDevice(camera)
             self.camera = camera
+            self.trigger = MicroManagerTrigger(self.core, camera)
             return self
         except Exception:
             self.close()
@@ -75,6 +77,7 @@ class MicroManagerSession:
 
     def stop(self):
         if self.core is not None and self.acquiring:
+            self.trigger.prepare_stop()
             self.core.stopSequenceAcquisition()
             self.acquiring = False
 
@@ -101,6 +104,9 @@ class MicroManagerControls:
     def __init__(self, session):
         self.session = session
         self.core, self.camera = session.core, session.camera
+        self.fps_property = "AcquisitionFrameRate"
+        if session.trigger.library == "SpinnakerC":
+            self.fps_property = "Frame Rate"
 
     def read_controls(self):
         core, camera = self.core, self.camera
@@ -122,7 +128,7 @@ class MicroManagerControls:
         if exposure and exposure.maximum > exposure.minimum:
             result["exposure"] = CameraControl(core.getExposure() * 1000,
                 exposure.minimum * 1000, exposure.maximum * 1000, writable=exposure.writable)
-        fps = result.get("mm:AcquisitionFrameRate")
+        fps = result.get("mm:" + self.fps_property)
         if fps and fps.maximum > fps.minimum:
             try:
                 result["fps"] = CameraControl(float(fps.value), fps.minimum, fps.maximum, writable=fps.writable)
@@ -167,7 +173,7 @@ class MicroManagerControls:
                 else:
                     raise ValueError("Width and height must be positive.")
             elif name == "fps":
-                self.core.setProperty(self.camera, "AcquisitionFrameRate", str(value))
+                self.core.setProperty(self.camera, self.fps_property, str(value))
             else:
                 self.core.setProperty(self.camera, name.removeprefix("mm:"), str(value))
             self.core.waitForDevice(self.camera)
@@ -177,6 +183,7 @@ class MicroManagerControls:
 
     def read_diagnostics(self):
         return {"backend": "Micro-Manager", "camera": self.camera,
+                "device_adapter": self.session.trigger.library,
                 "configuration": self.session.profile["config"],
                 "core_version": self.core.getVersionInfo(),
                 "adapter_api": self.core.getAPIVersionInfo(),

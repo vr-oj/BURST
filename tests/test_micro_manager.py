@@ -29,10 +29,12 @@ def fake_core():
     core.getCameraDevice.return_value = "Camera"
     core.getVersionInfo.return_value = "MMCore test"
     core.getAPIVersionInfo.return_value = "Device API version 75"
+    core.getDeviceLibrary.return_value = "TestAdapter"
     values = {"Exposure": "10", "Gain": "2", "PixelType": "16bit",
               "TriggerMode": "Internal", "Serial": "123", "SetupOnly": "fixed",
               "AcquisitionFrameRate": "10"}
     core.getDevicePropertyNames.side_effect = lambda camera: list(values)
+    core.hasProperty.side_effect = lambda camera, key: key in values
     core.getProperty.side_effect = lambda camera, key: values[key]
     core.setProperty.side_effect = lambda camera, key, value: values.__setitem__(key, value)
     core.hasPropertyLimits.side_effect = lambda camera, key: key in {"Exposure", "AcquisitionFrameRate"}
@@ -250,6 +252,97 @@ class MicroManagerTests(unittest.TestCase):
         thread.run()
         self.core.stopSequenceAcquisition.assert_called_once()
         self.core.unloadAllDevices.assert_called_once()
+
+    def spinnaker_controls(self):
+        self.core.getDeviceLibrary.return_value = "SpinnakerC"
+        names = ["Exposure", "Frame Rate", "Frame Rate Control Enabled", "Trigger Mode",
+                 "Trigger Selector", "Trigger Source", "Trigger Activation"]
+        self.core.getDevicePropertyNames.side_effect = lambda camera: names
+        self.core.hasProperty.side_effect = lambda camera, name: name in names
+        self.core.hasPropertyLimits.side_effect = lambda camera, name: name in {"Exposure", "Frame Rate"}
+        for name, value in {"Trigger Mode": "On", "Trigger Selector": "FrameStart",
+                            "Trigger Source": "Line0", "Trigger Activation": "FallingEdge",
+                            "Frame Rate": "6", "Frame Rate Control Enabled": "1"}.items():
+            self.core.setProperty("Camera", name, value)
+        self.core.getAllowedPropertyValues.side_effect = lambda camera, name: {
+            "Trigger Mode": ("Off", "On"), "Trigger Source": ("Software", "Line0"),
+            "Trigger Selector": ("FrameStart",), "Trigger Activation": ("RisingEdge", "FallingEdge"),
+        }.get(name, ())
+
+    def test_spinnakerc_uses_actual_adapter_names_for_preview_arm_and_restore(self):
+        self.spinnaker_controls()
+        service = MicroManagerService(self.sdk)
+        self.addCleanup(service.close)
+        preview = service.dispatch("open", (self.profile, ""))
+        self.assertEqual(self.core.getProperty("Camera", "Trigger Mode"), "Off")
+        self.assertEqual(preview["controls"]["fps"].value, 10)
+        service.dispatch("set", ("fps", 5))
+        service.dispatch("set", ("exposure", 23000))
+        armed = service.dispatch("timing", ("auto",))
+        self.assertEqual(armed["trigger_configuration"], {
+            "Trigger Selector": "FrameStart", "Trigger Source": "Line0",
+            "Trigger Activation": "RisingEdge", "Trigger Mode": "On"})
+        self.assertEqual(armed["trigger_input"]["name"], "Line0")
+        self.assertEqual(self.core.getProperty("Camera", "Frame Rate Control Enabled"), "0")
+        restored = service.dispatch("timing", ("",))
+        self.assertEqual(restored["trigger_configuration"], {})
+        self.assertIsNone(restored["trigger_input"])
+        self.assertEqual(self.core.getProperty("Camera", "Trigger Mode"), "Off")
+        self.assertEqual(self.core.getProperty("Camera", "Frame Rate Control Enabled"), "1")
+        self.assertEqual(restored["controls"]["fps"].value, 5)
+        self.assertEqual(self.core.getExposure(), 23)
+
+    def test_mm_adapter_cannot_silently_reset_triggering_when_sequence_starts(self):
+        self.spinnaker_controls()
+        service = MicroManagerService(self.sdk)
+        self.addCleanup(service.close)
+        service.dispatch("open", (self.profile, ""))
+        self.core.startContinuousSequenceAcquisition.side_effect = lambda _: self.core.setProperty(
+            "Camera", "Trigger Mode", "Off")
+        with self.assertRaisesRegex(RuntimeError, "settings changed while arming"):
+            service.dispatch("timing", ("auto",))
+
+    def test_tiscam_uses_external_mode_and_records_unexposed_settings(self):
+        self.core.getDeviceLibrary.return_value = "TIScam"
+        service = MicroManagerService(self.sdk)
+        self.addCleanup(service.close)
+        service.dispatch("open", (self.profile, ""))
+        service.dispatch("set", ("exposure", 23000))
+        armed = service.dispatch("timing", ("auto",))
+        self.assertEqual(armed["trigger_configuration"], {"TriggerMode": "External"})
+        self.assertEqual(armed["trigger_input"]["not_exposed"],
+                         ["TriggerSource", "TriggerSelector", "TriggerActivation"])
+        # The TIS adapter's acquisition thread can wait forever for a pulse.
+        # BURST must release that wait before requesting its blocking stop.
+        def stop():
+            self.assertEqual(self.core.getProperty("Camera", "TriggerMode"), "Internal")
+        self.core.stopSequenceAcquisition.side_effect = stop
+        restored = service.dispatch("timing", ("",))
+        self.assertEqual(restored["trigger_configuration"], {})
+        self.assertEqual(self.core.getExposure(), 23)
+        service.dispatch("timing", ("auto",))
+        service.close()  # Cleanup must also release the pulse wait.
+
+    def test_unknown_mm_adapter_with_external_enum_is_not_assumed_supported(self):
+        service = MicroManagerService(self.sdk)
+        self.addCleanup(service.close)
+        service.dispatch("open", (self.profile, ""))
+        with self.assertRaisesRegex(RuntimeError, "does not mean the camera lacks triggering"):
+            service.dispatch("timing", ("auto",))
+        self.assertEqual(self.core.getProperty("Camera", "TriggerMode"), "Internal")
+
+    def test_spinnakerc_does_not_guess_between_multiple_physical_inputs(self):
+        self.spinnaker_controls()
+        self.core.setProperty("Camera", "Trigger Source", "Software")
+        original = self.core.getAllowedPropertyValues.side_effect
+        self.core.getAllowedPropertyValues.side_effect = lambda camera, name: (
+            ("Software", "Line0", "Line1") if name == "Trigger Source" else original(camera, name))
+        service = MicroManagerService(self.sdk)
+        self.addCleanup(service.close)
+        service.dispatch("open", (self.profile, ""))
+        with self.assertRaisesRegex(RuntimeError, "one-time setup"):
+            service.dispatch("timing", ("auto",))
+        self.assertEqual(self.core.getProperty("Camera", "Trigger Mode"), "Off")
 
     def test_missing_trigger_pulses_time_out_without_blocking_fetch(self):
         self.core.getRemainingImageCount.return_value = 0

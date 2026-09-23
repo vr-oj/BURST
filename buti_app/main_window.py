@@ -1896,6 +1896,7 @@ class MainWindow(QMainWindow):
             "capture_mode": self._recording_capture_mode,
             "timing_mode": "force_only" if self._recording_capture_mode == "force_only" else ("external_trigger" if self._camera_armed else "software"),
             "trigger_configuration": getattr(self.camera_thread, "trigger_configuration", {}),
+            "trigger_input": getattr(self.camera_thread, "trigger_input", None),
             "timing_validation": "not_verified_by_burst",
             "box_observation_before_run": self._box_observation.snapshot(),
             "first_sample_policy": "requires_zeroed_box" if self._camera_armed else "baseline_only_trigger_phase_unknown",

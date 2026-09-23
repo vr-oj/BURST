@@ -9,7 +9,8 @@ except Exception:  # Optional SDK may be installed with missing runtime DLLs
 
 import numpy as np
 from cameras.frame_data import FrameData
-from cameras.trigger import configure_external_trigger, verify_external_trigger
+from cameras.trigger import verify_external_trigger
+from cameras.ic4_trigger import configure_ic4_trigger
 from cameras.timing_thread import TimingCameraThread
 
 from utils.config import DEFAULT_FPS
@@ -60,6 +61,11 @@ class SDKCameraThread(TimingCameraThread):
     def set_resolution(self, resolution_tuple):
         # resolution_tuple is (w, h, pf_name), e.g. (2448, 2048, "Mono8")
         self._resolution = resolution_tuple
+
+    def _configure_trigger(self, props, source):
+        configured, self.trigger_input = configure_ic4_trigger(
+            ic4, props, self._device_info.model_name, source)
+        return configured
 
     def run(self):
         try:
@@ -205,10 +211,7 @@ class SDKCameraThread(TimingCameraThread):
                     props.find_boolean("AcquisitionFrameRateEnable").value = False
                 except Exception:
                     log.info("IC4 frame-rate enable switch unavailable; monitoring requested images.")
-                self.trigger_configuration = configure_external_trigger(
-                    lambda n: props.find_enumeration(n).value,
-                    lambda n, v: setattr(props.find_enumeration(n), "value", v), source,
-                    choices=lambda: [e.name for e in props.find_enumeration("TriggerSource").entries])
+                self.trigger_configuration = self._configure_trigger(props, source)
             adapter = IC4Controls(self.grabber)
             self.controller.open(adapter)
 
@@ -259,12 +262,10 @@ class SDKCameraThread(TimingCameraThread):
                         node.value = False
                     except Exception:
                         pass
-                    configured = configure_external_trigger(
-                        lambda n: props.find_enumeration(n).value,
-                        lambda n, v: setattr(props.find_enumeration(n), "value", v), requested,
-                        choices=lambda: [e.name for e in props.find_enumeration("TriggerSource").entries])
+                    configured = self._configure_trigger(props, requested)
                 else:
                     props.find_enumeration("TriggerMode").value = "Off"
+                    self.trigger_input = None
                     if preview_rate_enable is not None:
                         props.find_boolean("AcquisitionFrameRateEnable").value = preview_rate_enable
                     configured = {}

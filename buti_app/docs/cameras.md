@@ -309,14 +309,38 @@ are reported. These checks cannot establish exposure synchronization.
 
 Start Camera always opens live preview. Start Recording automatically switches to
 Arduino triggering before starting the box, then Stop Recording returns to preview
-without reopening the camera or resetting image settings. FrameStart, RisingEdge and
-the selected physical input are verified after arming. BURST reuses a selected Line
+without reopening the camera or resetting image settings. GenICam backends request
+FrameStart, RisingEdge and the selected physical input and verify them after arming. BURST reuses a selected Line
 input or chooses the only available Line input; ambiguous inputs require one-time
 setup in camera properties/vendor tools. No typed trigger-name prompt is part of
 normal recording. Physical wiring is still required and cannot be detected by this check.
 
-IC4, Spinnaker, GenTL and Micro-Manager adapters exposing the required nodes can be
-armed. Unsupported cameras can preview normally and remain usable through
+The DMK 37BUX250 has a fixed `TRIGGER_IN` and no `TriggerSource` property. Its IC4
+backend verifies the mode, frame-start selector and edge; the manifest records the
+documented fixed input separately from actual property readback.
+
+Micro-Manager is a separate camera connection, not a wrapper around BURST's IC4
+backend. Its device adapter determines the controls available to BURST:
+
+- GenICam adapters can expose `TriggerMode` or `Trigger Mode` (and corresponding
+  source, selector and activation properties). BURST translates these names;
+  SpinnakerC uses the spaced names. Its `Frame Rate` control also drives BURST's FPS control.
+- TIScam uses `TriggerMode = Internal/External`. BURST switches that control and
+  verifies it again after sequence acquisition starts. Input selection, frame-start
+  semantics and edge polarity are not exposed through this adapter. Configure and
+  validate those in the camera's native settings; the manifest lists them as
+  unexposed, not verified. TIScam requires its own compatible TIS drivers; installing
+  IC4 alone does not establish TIScam compatibility. Its pulse-wait is released before
+  stopping a sequence, and images from that transition are excluded from recording.
+- Other adapters can still preview and expose their native properties. An
+  unrecognized trigger interface reports that limitation rather than treating a
+  missing property as proof the camera lacks hardware triggering.
+
+The same recorder associates images and Arduino rows for every backend. Adapter
+readback and automated tests do not replace a triggered hardware acceptance run,
+including stop/restart with no arriving pulses, for each adapter/camera combination.
+
+Unsupported cameras can preview normally and remain usable through
 **Acquisition → Advanced → Allow approximate software pairing**, with explicit
 consent and visible timing labels. This choice resets when switching cameras or
 restarting BURST; failures never silently fall back. Use ZERO on the box before each
