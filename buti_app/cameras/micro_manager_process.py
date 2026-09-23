@@ -146,6 +146,11 @@ class MicroManagerService:
                 result = {"cameras": list(session.core.getLoadedDevicesOfType(self.sdk.CameraDevice)),
                           "selected": session.camera, "version": session.core.getVersionInfo(),
                           "api": session.core.getAPIVersionInfo()}
+                result["modes"] = {}
+                for camera in result["cameras"]:
+                    session.core.setCameraDevice(camera)
+                    result["modes"][camera] = {"width": session.core.getImageWidth(),
+                                               "height": session.core.getImageHeight()}
             return result
         if method == "open":
             self.session = MicroManagerSession(self.sdk, args[0])

@@ -35,8 +35,10 @@ backend can use it; otherwise an installed adapter implements the contract below
    them. It does not certify image acquisition or timing. Select a camera, click
    **Add selected camera**, then **Save**. Multiple configurations can be saved;
    the same dialog removes saved entries without deleting any files.
-5. Select the saved Micro-Manager entry from **Camera Device**, keep **Camera
-   Default**, and start the preview. Geometry and pixel type initially come from
+5. Select the saved Micro-Manager entry from **Camera Device** and start the preview.
+   The resolution selector shows the dimensions read during setup, or says that
+   resolution will be read on start for older saved profiles. It updates to the
+   opened camera's actual dimensions. Geometry and pixel type initially come from
    the configuration. Let delivery stabilize before recording. The normal 10 FPS
    readiness check and recording lag guard apply.
 
@@ -78,7 +80,8 @@ must include the bridge. Source users update their environment with Command Prom
 .venv\Scripts\python.exe -m pip install -r buti_app\requirements.txt
 ```
 
-Acquisition uses the MMCore sequence buffer, detects overflow, and copies images
+Acquisition uses MMCore's dedicated continuous-acquisition API and sequence buffer,
+detects reported overflow, and copies images
 before native buffers can be reused. Supported images are single-channel 8/16-bit
 monochrome and packed 32-bit RGB. High-bit-depth monochrome is scaled by its reported
 bit depth to BURST's existing **8-bit preview/TIFF pipeline**; original 16-bit precision

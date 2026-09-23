@@ -492,6 +492,7 @@ class MainWindow(QMainWindow):
             self.camera_widget.clear_roi()
         device = self.device_combo.itemData(index)
         self.resolution_combo.clear()
+        self.resolution_combo.setToolTip("")
         self.resolution_combo.addItem("Choose resolution…", None)
         if device:
             for mode in self.camera_registry.list_modes(device):
@@ -637,6 +638,8 @@ class MainWindow(QMainWindow):
             return
         self.camera_control_panel.set_controller(self.camera_thread.controller)
         self.camera_control_panel.setEnabled(True)
+        diagnostics = self.camera_thread.controller.diagnostics()
+        self._update_micro_manager_resolution(diagnostics.get("image_width"), diagnostics.get("image_height"))
 
         self.camera_info_panel.update_status("Connected", state="connected")
         self.camera_info_panel.set_status_message("Streaming")
@@ -644,6 +647,14 @@ class MainWindow(QMainWindow):
             True, self.camera_widget.normalized_roi() is not None
         )
         self._refresh_recording_button_states()
+
+    def _update_micro_manager_resolution(self, width, height):
+        device = self.device_combo.currentData()
+        if (device is not None and device.backend == "micromanager"
+                and isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
+            self.resolution_combo.setItemText(self.resolution_combo.currentIndex(),
+                                             f"{width}×{height} (Configuration)")
+            self.resolution_combo.setToolTip("Uses the Micro-Manager configuration. Change sensor ROI or binning in Camera properties.")
 
     @pyqtSlot(QImage, object)
     def _update_camera_info(self, image: QImage, raw):
@@ -659,6 +670,7 @@ class MainWindow(QMainWindow):
         width = image.width()
         height = image.height()
         self.camera_info_panel.set_resolution(f"{width}×{height}")
+        self._update_micro_manager_resolution(width, height)
 
         if self.camera_info_panel.status_text() != "Connected":
             self.camera_info_panel.update_status("Connected", state="connected")

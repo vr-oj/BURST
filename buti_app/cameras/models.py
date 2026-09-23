@@ -34,6 +34,8 @@ class CameraMode:
     @property
     def display_name(self) -> str:
         if not self.width or not self.height:
+            if self.pixel_format == "Configuration":
+                return "Configuration (resolution read on start)"
             return "Camera Default"
         return f"{self.width}×{self.height} ({self.pixel_format})"
 

@@ -149,6 +149,7 @@ class MicroManagerSetupDialog(QDialog):
 
     def _loaded(self, details):
         self.validated = dict(self._pending_profile)
+        self._configured_modes = details.get("modes", {})
         self.cameras.addItems(details["cameras"])
         self.cameras.setCurrentText(details["selected"])
         self.status.setText(f"Configuration loaded. {details['version']}; {details['api']}. "
@@ -177,9 +178,13 @@ class MicroManagerSetupDialog(QDialog):
         if self.validated is None or not self.cameras.currentText():
             return
         profile = dict(self.validated, camera=self.cameras.currentText())
-        if profile not in self.profiles:
-            self.profiles.append(profile)
-            self._refresh_saved()
+        mode = self._configured_modes.get(profile["camera"])
+        if mode:
+            profile["configured_mode"] = mode
+        self.profiles = [p for p in self.profiles if any(p.get(key) != profile[key]
+                         for key in ("installation", "config", "camera"))]
+        self.profiles.append(profile)
+        self._refresh_saved()
         self.status.setText("Camera added. Save, select it in Camera Device, and start the preview.")
 
     def accept(self):

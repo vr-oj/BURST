@@ -68,7 +68,10 @@ class MicroManagerSession:
         # MMCore's interval argument is unused by many adapters. Never call it a
         # guaranteed frame-rate setting; delivery is checked by BURST preflight.
         self.acquiring = True
-        self.core.startSequenceAcquisition(2**31 - 1, 100.0, True)
+        # A large finite sequence is not equivalent to continuous acquisition:
+        # adapters such as SpinnakerC select hardware MultiFrame and its limited
+        # frame counter. Use the dedicated indefinite preview API.
+        self.core.startContinuousSequenceAcquisition(100.0)
 
     def stop(self):
         if self.core is not None and self.acquiring:
@@ -207,6 +210,10 @@ class MicroManagerBackend:
         return devices
 
     def list_modes(self, device):
+        mode = device.native_info.get("configured_mode", {})
+        if (isinstance(mode, dict) and isinstance(mode.get("width"), int)
+                and isinstance(mode.get("height"), int) and mode["width"] > 0 and mode["height"] > 0):
+            return [CameraMode(mode["width"], mode["height"], "Configuration")]
         return [CameraMode(0, 0, "Configuration")]
 
     def create_thread(self, device, parent=None):

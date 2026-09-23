@@ -100,6 +100,15 @@ class MicroManagerTests(unittest.TestCase):
         self.assertIsInstance(registry.get_thread(device), MMCoreCameraThread)
         self.core.loadSystemConfiguration.assert_not_called()
 
+    def test_configured_dimensions_are_shown_without_opening_camera(self):
+        backend = MicroManagerBackend(self.sdk)
+        backend.profiles = [dict(self.profile, configured_mode={"width": 3072, "height": 2048})]
+        device, = backend.discover()
+        mode, = backend.list_modes(device)
+        self.assertEqual(mode.as_tuple(), (3072, 2048, "Configuration"))
+        self.assertIn("3072", mode.display_name)
+        self.core.loadSystemConfiguration.assert_not_called()
+
     def test_missing_configuration_releases_resources(self):
         with self.assertRaisesRegex(ValueError, "existing"):
             with MicroManagerSession(self.sdk, dict(self.profile, config="missing.cfg")):
@@ -147,7 +156,7 @@ class MicroManagerTests(unittest.TestCase):
             adapter = MicroManagerControls(session)
             adapter.set_value("mm:Gain", "3")
             self.core.stopSequenceAcquisition.assert_called_once()
-            self.assertEqual(self.core.startSequenceAcquisition.call_count, 2)
+            self.assertEqual(self.core.startContinuousSequenceAcquisition.call_count, 2)
             self.assertEqual(adapter.read_controls()["mm:Gain"].value, "3")
 
     def test_thread_owns_frame_and_cleans_up(self):
@@ -168,6 +177,8 @@ class MicroManagerTests(unittest.TestCase):
         array[:] = 0
         self.assertEqual(image.pixelColor(0, 0).red(), 128)
         self.core.stopSequenceAcquisition.assert_called_once()
+        self.core.startContinuousSequenceAcquisition.assert_called_once_with(100.0)
+        self.core.startSequenceAcquisition.assert_not_called()
         self.core.unloadAllDevices.assert_called_once()
         self.assertEqual(thread.controller.capabilities(), {})
 
@@ -187,7 +198,7 @@ class MicroManagerTests(unittest.TestCase):
                 core.unloadAllDevices.assert_called_once()
 
     def test_partial_start_failure_still_stops_camera(self):
-        self.core.startSequenceAcquisition.side_effect = RuntimeError("start failed")
+        self.core.startContinuousSequenceAcquisition.side_effect = RuntimeError("start failed")
         thread = self.thread()
         thread.run()
         self.core.stopSequenceAcquisition.assert_called_once()
@@ -246,6 +257,9 @@ class MicroManagerTests(unittest.TestCase):
         dialog.cameras.setCurrentText("Camera2")
         dialog._add()
         self.assertEqual(dialog.profiles[0]["camera"], "Camera2")
+        self.assertEqual(dialog.profiles[0]["configured_mode"], {"width": 4, "height": 2})
+        dialog._add()
+        self.assertEqual(len(dialog.profiles), 1)
         self.core.unloadAllDevices.assert_called_once()
         dialog.config.setText("missing.cfg")
         self.assertFalse(dialog.add.isEnabled())
