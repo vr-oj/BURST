@@ -86,7 +86,8 @@ from utils.config import (
 )
 from utils.path_helpers import get_next_run_folder, list_session_names, resource_path
 from utils.braid_connector import braid_launch_command, find_braid_application
-from utils.preflight import run_recording_preflight
+from utils.preflight import run_recording_preflight, PreflightCheck
+from utils.camera_rate import CameraRateMonitor, check_camera_rate, RATE_GUIDANCE
 from utils.recording_files import rename_recording_pair, validate_path_component
 from utils.recording_recovery import (
     find_recoverable_manifests,
@@ -132,6 +133,7 @@ class MainWindow(QMainWindow):
         self._recording_had_output = False
         self._last_recording_summary = None
         self._last_camera_frame_monotonic = None
+        self._camera_rate_monitor = CameraRateMonitor()
         self._completion_sound_enabled = bool(
             load_app_setting(SETTING_COMPLETION_SOUND, True)
         )
@@ -186,6 +188,11 @@ class MainWindow(QMainWindow):
         # Populate device list so user can select camera
         self._populate_device_list()
         self._set_initial_control_states()
+        self.camera_info_panel.rate_help_button.clicked.connect(self._show_camera_rate_help)
+        self._camera_rate_timer = QTimer(self)
+        self._camera_rate_timer.setInterval(1000)
+        self._camera_rate_timer.timeout.connect(self._update_camera_rate_status)
+        self._camera_rate_timer.start()
 
         self.setWindowTitle(f"{APP_NAME} - v{APP_VERSION}")
         log.info("MainWindow initialized.")
@@ -556,6 +563,7 @@ class MainWindow(QMainWindow):
 
             w, h, pf_name = resdata
             self._last_camera_frame_monotonic = None
+            self._camera_rate_monitor.reset()
 
             try:
                 self.camera_thread = self.camera_registry.get_thread(dev_info, parent=self)
@@ -643,6 +651,7 @@ class MainWindow(QMainWindow):
             self.camera_thread.frame_ready.connect(self._update_camera_info)
         """
         self._last_camera_frame_monotonic = time.monotonic()
+        self._camera_rate_monitor.observe(self._last_camera_frame_monotonic)
         self.camera_info_panel.increment_frame_count()
 
         width = image.width()
@@ -657,6 +666,56 @@ class MainWindow(QMainWindow):
                 self.camera_widget.normalized_roi() is not None,
             )
             self._refresh_recording_button_states()
+
+    def _camera_rate_check(self):
+        controller = getattr(self.camera_thread, "controller", None)
+        capabilities = controller.capabilities() if controller else {}
+        fps = capabilities.get("fps")
+        measured = self._camera_rate_monitor.fps(time.monotonic())
+        return check_camera_rate(measured, float(fps.value) if fps else None,
+                                 fps.maximum if fps else None, DEFAULT_FPS)
+
+    def _update_camera_rate_status(self):
+        if self.camera_thread is None or not self.camera_thread.isRunning():
+            self._camera_rate_monitor.reset()
+            self.camera_info_panel.rate_status.setText("Target: 10 FPS · Start the camera to measure delivery rate.")
+            self.camera_info_panel.rate_status.setStyleSheet("")
+            return
+        measured = self._camera_rate_monitor.fps(time.monotonic())
+        self.camera_info_panel.set_fps(measured)
+        check = self._camera_rate_check()
+        self.camera_info_panel.rate_status.setText(check.detail)
+        self.camera_info_panel.rate_status.setStyleSheet("" if check.passed else "color: #f3c969;")
+
+    def _show_camera_rate_help(self, detail=None):
+        if not isinstance(detail, str):
+            detail = self._camera_rate_check().detail
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Camera Rate and Recording")
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setText(detail)
+        dialog.setInformativeText(RATE_GUIDANCE)
+        controller = getattr(self.camera_thread, "controller", None)
+        diagnostics = controller.diagnostics() if controller else {}
+        dialog.setDetailedText("Camera diagnostics:\n" + json.dumps(diagnostics, indent=2))
+        adjust = retry = None
+        if self._recording_state == "idle":
+            adjust = dialog.addButton("Adjust camera / resolution", QMessageBox.ActionRole)
+            fps = controller.capabilities().get("fps") if controller else None
+            if fps and fps.writable:
+                retry = dialog.addButton("Request 10 FPS", QMessageBox.ActionRole)
+        close = dialog.addButton(QMessageBox.Close)
+        dialog.setDefaultButton(close)
+        dialog.exec_()
+        clicked = dialog.clickedButton()
+        if retry is not None and clicked is retry:
+            controller.set_value("fps", float(DEFAULT_FPS))
+            self._camera_rate_monitor.reset()
+            self.statusBar().showMessage("Requested 10 FPS. Wait 5 seconds, then retry recording.", 6000)
+        elif adjust is not None and clicked is adjust:
+            if self.camera_thread is not None and self.camera_thread.isRunning():
+                self._on_start_stop_camera()
+            self.statusBar().showMessage("Once the camera stops, choose a smaller acquisition resolution and restart it.", 10000)
 
     @pyqtSlot(str, str)
     def _on_camera_error(self, msg: str, code: str):
@@ -1556,6 +1615,7 @@ class MainWindow(QMainWindow):
         self._recorder_worker.ready_for_acquisition.connect(self._on_recorder_ready)
         self._recorder_worker.finalized.connect(self._on_recording_finalized)
         self._recorder_worker.error_occurred.connect(self._handle_recorder_error)
+        self._recorder_worker.synchronization_lost.connect(self._on_recording_sync_lost)
         self._recorder_worker.warning_occurred.connect(
             self._handle_recorder_warning
         )
@@ -1577,6 +1637,12 @@ class MainWindow(QMainWindow):
         self.recording_status_label.setText(f"Preparing → {run_folder_name}")
         log.info("Preparing recording in %s.", run_folder_name)
 
+    @pyqtSlot(str)
+    def _on_recording_sync_lost(self, message):
+        self._request_recording_stop(send_device_stop=True, reason="camera fell behind force samples")
+        self.statusBar().showMessage(message, 15000)
+        log.warning(message)
+
     def _run_silent_recording_preflight(self) -> bool:
         """Return quietly when ready and explain every failed prerequisite at once."""
 
@@ -1586,6 +1652,7 @@ class MainWindow(QMainWindow):
             if self._last_camera_frame_monotonic is None
             else max(0.0, now - self._last_camera_frame_monotonic)
         )
+        rate_check = self._camera_rate_check()
         report = run_recording_preflight(
             serial_ready=(
                 self._serial_thread is not None and self._serial_thread.isRunning()
@@ -1598,12 +1665,16 @@ class MainWindow(QMainWindow):
             device_run_active=self._device_run_active,
             results_root=config.BURST_ROOT,
             minimum_free_gb=config.MIN_FREE_SPACE_GB,
+            camera_rate_check=PreflightCheck("Camera rate", rate_check.passed, rate_check.detail),
         )
         if report.passed:
             log.info("Silent recording readiness check passed.")
             return True
 
         failed_labels = "\n".join(f"• {check.label}: {check.detail}" for check in report.failures)
+        if any(check.label == "Camera rate" for check in report.failures):
+            self._show_camera_rate_help(failed_labels)
+            return False
         dialog = QMessageBox(self)
         dialog.setIcon(QMessageBox.Warning)
         dialog.setWindowTitle("Recording Not Ready")
@@ -1631,6 +1702,12 @@ class MainWindow(QMainWindow):
             "session": self._current_session_name,
             "run": os.path.basename(outdir),
             "camera_resolution": resolution,
+            "camera_rate": {
+                "target_fps": DEFAULT_FPS,
+                "measured_delivery_fps": self._camera_rate_monitor.fps(time.monotonic()),
+                "diagnostics": self.camera_thread.controller.diagnostics() if self.camera_thread else {},
+                "pairing": "arrival_order_not_hardware_synchronized",
+            },
             "frame_transform": {
                 "normalized_roi": list(roi) if roi else None,
                 "mirror_horizontal": self._mirror_horizontal,

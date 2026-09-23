@@ -147,9 +147,9 @@ external Python installations for new modules.
 
 Spinnaker binding inclusion is explicit:
 
-```powershell
-# First install the matching SDK-supplied cp312 Windows x64 wheel in .venv.
-$env:BURST_BUNDLE_PYSPIN = "1"
+```bat
+REM First install the matching SDK-supplied cp312 Windows x64 wheel in .venv.
+set BURST_BUNDLE_PYSPIN=1
 .venv\Scripts\python.exe -m PyInstaller --noconfirm --clean BURST.spec
 ```
 
@@ -167,6 +167,52 @@ Building without an SDK is supported, but installing a wheel beside an existing
 executable does not retrofit its frozen Python environment. Rebuild with the adapter
 or use a source installation. Spinnaker-enabled packaging needs validation on a
 clean Windows PC with the target runtime, camera, and the matching Python binding.
+
+## Everyday use of an installed BURST application
+
+Users do not need this repository, Python, pip, or wheel files when their camera
+adapter is included in the supplied BURST build. Install BURST and the required
+vendor drivers/runtime, connect the camera, select Refresh Devices, choose the
+camera and resolution, and start the preview. Close other camera applications first.
+
+| Camera connection | What the user needs |
+| --- | --- |
+| Windows-compatible USB/UVC camera | Windows camera driver; BURST with OpenCV included. Controls and supported modes depend on the driver. |
+| IC4 camera | BURST with IC4 support plus the compatible vendor runtime/drivers. |
+| FLIR/Spinnaker camera | A Spinnaker-enabled BURST build plus the matching Spinnaker runtime/drivers. |
+| Other GenTL camera | BURST with its GenTL bridge plus a compatible vendor GenTL producer and drivers. The installer must register its producer path; otherwise support must configure it once. |
+| Other proprietary SDK | A BURST release containing an adapter for that SDK, plus its required runtime/drivers. Installing an arbitrary SDK alone cannot add support. |
+
+The current BURST installer does not install vendor runtimes or provide an SDK
+installation wizard. Distributors should provide the supported camera list and
+matching runtime installer/version alongside each release. Hardware compatibility
+and clean-machine installation must be checked before that release is distributed.
+
+## Frame rate and trigger timing
+
+BURST requests 10 FPS by default. Let the preview run for at least five seconds.
+The preview shows measured delivery rate; recording readiness checks both delivery
+and any reported configured/maximum rate. Measured delivery allows 5% tolerance.
+A lower rate blocks recording and opens camera help with options to request 10 FPS,
+stop and adjust acquisition resolution, use Mono8, shorten exposure, improve lighting,
+or check the USB connection and vendor bandwidth settings. IC4, Spinnaker and GenTL
+offer smaller sensor regions where available. These may crop the field of view;
+the separate recording ROI does not reduce camera transfer bandwidth.
+
+During recording, more than one second of unpaired force samples stops recording
+and requests a device stop. Saved files are retained and marked for review. This
+limits accumulating lag; it cannot guarantee alignment or recover missing frames.
+
+**A passing rate check is not proof of synchronization.** The FLIR adapter currently
+sets `TriggerMode=Off`: frames run independently of the Arduino. A missing trigger
+cable prevents hardware-triggered exposure, but does not explain a reported 6.83 FPS
+limit in this free-running configuration. Connecting a cable alone changes no software
+settings. Hardware synchronization requires electrically compatible wiring, correct
+trigger input/source/polarity configuration and validation of exposure-to-force timing.
+That trigger workflow is not implemented by the rate check. Recordings currently pair
+images and force samples in arrival order; metadata records this limitation and the
+measured preview rate. Spinnaker diagnostics also expose rate, exposure, trigger and
+available throughput settings in the help dialog and recording metadata.
 
 ## Hardware acceptance checks
 

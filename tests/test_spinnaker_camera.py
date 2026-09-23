@@ -9,7 +9,7 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).parents[1] / "buti_app"))
 from cameras import CameraRegistry
-from cameras.spinnaker_backend import SpinnakerBackend, SpinnakerSession
+from cameras.spinnaker_backend import SpinnakerBackend, SpinnakerSession, SpinnakerControls
 from threads.spinnaker_camera_thread import SpinnakerCameraThread, copy_spinnaker_frame
 sys.path.pop(0)
 
@@ -99,6 +99,18 @@ def fake_sdk():
 
 
 class SpinnakerTests(unittest.TestCase):
+    def test_rate_clamping_is_reported(self):
+        sdk, camera, _, _, _ = fake_sdk()
+        node = Node(5, 1, 6.83)
+        camera.GetNodeMap.return_value = NS(GetNode=lambda name: node)
+        controls = SpinnakerControls(NS(sdk=sdk, camera=camera))
+        with self.assertRaisesRegex(RuntimeError, "6.83"):
+            controls.set_value("fps", 10)
+        self.assertEqual(node.value, 6.83)
+        node.maximum = 30
+        controls.set_value("fps", 10)
+        self.assertEqual(node.value, 10)
+
     def test_discovery_detaches_identity_and_releases_system(self):
         sdk, camera, system, image, events = fake_sdk()
         registry = CameraRegistry(importer=lambda name: sdk if name == "PySpin" else (_ for _ in ()).throw(ImportError()))
@@ -114,7 +126,7 @@ class SpinnakerTests(unittest.TestCase):
         backend = SpinnakerBackend(sdk)
         device, = backend.discover()
         modes = backend.list_modes(device)
-        self.assertEqual(len(modes), 6)
+        self.assertEqual(len(modes), 12)
         self.assertEqual(modes[0].as_tuple(), (4, 2, "Mono8"))
         self.assertEqual(events[-4:], ["init", "deinit", "clear", "release"])
 

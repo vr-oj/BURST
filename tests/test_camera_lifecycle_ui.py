@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -74,6 +75,12 @@ class CameraLifecycleUiTests(unittest.TestCase):
             registry.get_thread.assert_called_with(devices[1], parent=window)
             self.assertFalse(window.device_combo.isEnabled())
             self.assertEqual(thread.resolution, (4, 2, "Mono8"))
+            # A running camera with one recent image must not bypass the rate check.
+            with tempfile.TemporaryDirectory() as directory, \
+                    patch.object(main_window.config, "BURST_ROOT", directory), \
+                    patch.object(window, "_show_camera_rate_help") as help_dialog:
+                self.assertFalse(window._run_silent_recording_preflight())
+                self.assertIn("Camera rate", help_dialog.call_args.args[0])
             window._populate_device_list()
             registry.discover_cameras.assert_called_once()
             # Finishing a recording must not allow reopening an active camera for mode queries.

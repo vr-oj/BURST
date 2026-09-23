@@ -32,6 +32,19 @@ class CameraController:
         self._active = False
         self._next_poll = 0.0
         self._last_error = ""
+        self._diagnostics = {}
+
+    def diagnostics(self):
+        with self._lock:
+            return dict(self._diagnostics)
+
+    @staticmethod
+    def _read_diagnostics(adapter):
+        try:
+            result = adapter.read_diagnostics()
+            return result if isinstance(result, dict) else {}
+        except Exception:
+            return {}
 
     def capabilities(self) -> dict[str, CameraControl]:
         with self._lock:
@@ -52,6 +65,7 @@ class CameraController:
     def open(self, adapter) -> None:
         with self._lock:
             self._snapshot = adapter.read_controls()
+            self._diagnostics = self._read_diagnostics(adapter)
             self._active = True
 
     def service(self, adapter) -> None:
@@ -70,14 +84,17 @@ class CameraController:
             changed = True
         if changed or time.monotonic() >= self._next_poll:
             snapshot = adapter.read_controls()
+            diagnostics = self._read_diagnostics(adapter)
             with self._lock:
                 self._snapshot = snapshot
+                self._diagnostics = diagnostics
             self._next_poll = time.monotonic() + 0.5
 
     def close(self) -> None:
         with self._lock:
             self._active = False
             self._snapshot = {}
+            self._diagnostics = {}
             while not self._commands.empty():
                 self._commands.get_nowait()
 

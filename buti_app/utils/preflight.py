@@ -39,6 +39,7 @@ def run_recording_preflight(
     results_root: str,
     minimum_free_gb: float,
     maximum_camera_frame_age_s: float = 3.0,
+    camera_rate_check: PreflightCheck | None = None,
 ) -> PreflightReport:
     """Check recording prerequisites without involving UI code."""
 
@@ -74,6 +75,9 @@ def run_recording_preflight(
             "Ready" if not device_run_active else "A manual device run is active",
         ),
     ]
+
+    if camera_rate_check is not None:
+        checks.append(camera_rate_check)
 
     root = Path(results_root)
     writable = False

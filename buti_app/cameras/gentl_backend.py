@@ -135,6 +135,11 @@ class GenTLControls:
             formats.remove(pixel_format.value)
             formats.insert(0, pixel_format.value)
         sizes = [(width.value, height.value), (width.max, height.max)]
+        if self.genapi.is_writable(width) and self.genapi.is_writable(height):
+            for divisor in (2, 4):
+                sizes.append(tuple(node.min + ((max(node.min, node.max // divisor) - node.min)
+                                              // max(1, node.inc)) * max(1, node.inc)
+                                   for node in (width, height)))
         return list(dict.fromkeys(CameraMode(w, h, p) for w, h in sizes for p in formats))
 
     def configure(self, resolution, fps):

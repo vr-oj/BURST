@@ -152,6 +152,8 @@ class CameraBackendTests(unittest.TestCase):
         self.assertEqual(modes[0].as_tuple(), (2448, 2048, "Mono8"))
         self.assertEqual({m.as_tuple() for m in modes}, {
             (2448, 2048, "Mono8"), (2448, 2048, "Mono16"),
+            (1224, 1024, "Mono8"), (1224, 1024, "Mono16"),
+            (612, 512, "Mono8"), (612, 512, "Mono16"),
             (640, 480, "Mono8"), (640, 480, "Mono16"),
         })
         self.assertEqual(pf.value, "Mono16")

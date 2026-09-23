@@ -129,9 +129,26 @@ class SpinnakerControls:
             node = self.node(FLOAT_NODES[name], "Float")
             if not self.sdk.IsWritable(node):
                 raise RuntimeError(f"{name} is unavailable or locked")
-            node.SetValue(max(node.GetMin(), min(float(value), node.GetMax())))
+            requested = float(value)
+            applied = max(node.GetMin(), min(requested, node.GetMax()))
+            node.SetValue(applied)
+            if name == "fps" and abs(node.GetValue() - requested) > 0.01:
+                raise RuntimeError(f"Requested {requested:g} FPS; camera allows/applied {node.GetValue():.2f} FPS. "
+                                   "Check resolution, exposure, USB connection, and bandwidth limits.")
         else:
             self.set_enum(ENUM_NODES[name], value)
+
+    def read_diagnostics(self):
+        result = {}
+        for name in ("TriggerMode", "TriggerSource", "AcquisitionFrameRate", "AcquisitionResultingFrameRate", "ExposureTime",
+                     "DeviceLinkThroughputLimit", "DeviceLinkCurrentThroughput", "DeviceMaxThroughput"):
+            try:
+                node = self.sdk.CValuePtr(self.session.camera.GetNodeMap().GetNode(name))
+                if self.sdk.IsReadable(node):
+                    result[name] = node.ToString()
+            except Exception:
+                pass
+        return result
 
     def configure(self, resolution, fps):
         for name, value in (("AcquisitionMode", "Continuous"), ("TriggerMode", "Off")):
@@ -163,7 +180,8 @@ class SpinnakerControls:
             try:
                 self.set_value(name, value)
             except Exception as exc:
-                log.info("Spinnaker default %s unchanged: %s", name, exc)
+                log.warning("Spinnaker default %s could not be fully applied: %s", name, exc)
+        log.info("Spinnaker acquisition configuration: %s", self.read_diagnostics())
 
     def list_modes(self):
         width, height = self.node("Width", "Integer"), self.node("Height", "Integer")
@@ -173,6 +191,14 @@ class SpinnakerControls:
         formats = [current] + [p for p in self.choices(pf)
                                if p in {"Mono8", "Mono16", "RGB8", "BGR8"} and p != current]
         sizes = [(width.GetValue(), height.GetValue()), (width.GetMax(), height.GetMax())]
+        if self.sdk.IsWritable(width) and self.sdk.IsWritable(height):
+            for divisor in (2, 4):
+                dimensions = []
+                for node in (width, height):
+                    minimum, step = node.GetMin(), max(1, node.GetInc())
+                    requested = max(minimum, node.GetMax() // divisor)
+                    dimensions.append(minimum + ((requested - minimum) // step) * step)
+                sizes.append(tuple(dimensions))
         return list(dict.fromkeys(CameraMode(w, h, p) for w, h in sizes for p in formats))
 
 

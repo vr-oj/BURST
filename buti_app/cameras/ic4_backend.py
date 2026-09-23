@@ -73,6 +73,20 @@ class IC4Backend:
                         # They are not the full set of camera-supported dimensions.
                         try:
                             modes.append(CameraMode(width.maximum, height.maximum, entry.name))
+                            if not any(getattr(node, "is_readonly", False) or getattr(node, "is_locked", False)
+                                       for node in (width, height)):
+                                for divisor in (2, 4):
+                                    dimensions = []
+                                    for node in (width, height):
+                                        requested = max(node.minimum, node.maximum // divisor)
+                                        mode = getattr(getattr(node, "increment_mode", None), "name", None)
+                                        if mode == "VALUE_SET":
+                                            value = min(node.valid_value_set, key=lambda value: abs(value - requested))
+                                        else:
+                                            step = node.increment if mode == "INCREMENT" else 1
+                                            value = node.minimum + ((requested - node.minimum) // max(1, step)) * max(1, step)
+                                        dimensions.append(value)
+                                    modes.append(CameraMode(*dimensions, entry.name))
                         except Exception as exc:
                             log.debug("IC4 maximum size unavailable for %s: %s", entry.name, exc)
                     except Exception as exc:

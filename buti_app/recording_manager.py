@@ -34,6 +34,7 @@ class RecordingManager(QObject):
     finished = pyqtSignal()
     error_occurred = pyqtSignal(str)
     warning_occurred = pyqtSignal(str)
+    synchronization_lost = pyqtSignal(str)
 
     def __init__(
         self,
@@ -237,6 +238,19 @@ class RecordingManager(QObject):
             self._pending_samples.append(
                 (time_s, frame_idx, distance, cycle, force)
             )
+            # Do not keep attaching progressively later images to old force
+            # samples. This is a lag guard, not proof of exposure synchronization.
+            if time_s - self._pending_samples[0][0] > 1.0:
+                message = (
+                    "Recording stopped: camera frames fell more than one second behind force samples. "
+                    "Saved files need review. Reduce acquisition resolution, check exposure and "
+                    "the camera connection, then verify 10 FPS before another run."
+                )
+                self._frame_index_issues.append(message)
+                self.warning_occurred.emit(message)
+                self.synchronization_lost.emit(message)
+                self.stop_recording()
+                return
         except Exception as exc:
             log.exception("Error writing CSV row")
             self._close_failed = True
