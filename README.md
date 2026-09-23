@@ -31,7 +31,7 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
 - Detects the end of a run with an adaptive serial-silence timeout while keeping the port connected.
 
 ### High-Speed Camera Preview & Control
-- Automatically lists IC4, FLIR/Spinnaker, generic USB/OpenCV, and installed GenTL cameras together.
+- Lists native IC4 cameras first, followed by saved Micro-Manager camera connections.
 - Add Micro-Manager cameras through **Acquisition → Advanced → Micro-Manager Camera Setup…**.
   Use **Find cameras**, or load a saved `.cfg`, add a camera, and save.
   Compatible cameras use the normal image controls; **Resolution** offers reported
@@ -39,7 +39,7 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
   Optional camera mappings can be saved and shared from setup without editing code.
   Compatible Micro-Manager adapters and vendor drivers must be installed; users do
   not need to copy files into BURST's installation folder. See [camera setup](buti_app/docs/cameras.md).
-- Supports additional installed SDK adapters without changing the camera UI.
+- Uses Micro-Manager's installed device adapters for other camera vendors.
 - Enables exposure, gain, auto modes, and frame rate controls according to device capabilities.
 - See [camera SDK installation, compatibility, and packaging](buti_app/docs/cameras.md).
 
@@ -120,7 +120,7 @@ Key threads:
 ### Windows Executable
 1. Download `BURST_Setup_<version>.exe` from the GitHub release.
 2. Run the installer and follow the setup wizard.
-3. Install your camera vendor's runtime/drivers. See [camera setup](buti_app/docs/cameras.md) for IC4, Spinnaker, USB, and other GenTL SDKs.
+3. Install the IC4 runtime/drivers, or compatible Micro-Manager and its camera adapter's required vendor drivers. See [camera setup](buti_app/docs/cameras.md).
 4. Launch **BURST** from the Start menu or optional desktop shortcut.
 
 Installed builds check for newer GitHub releases automatically without delaying
@@ -146,7 +146,7 @@ remove that warning for an official public release.
    ```powershell
    .venv\Scripts\python.exe -m pip install -r buti_app\requirements.txt
    ```
-4. Install your camera's runtime/drivers and, for Spinnaker, its matching PySpin wheel. See [camera setup](buti_app/docs/cameras.md).
+4. Install your camera's runtime/drivers. Cameras beyond native IC4 connect through Micro-Manager; no vendor Python wheel is required. See [camera setup](buti_app/docs/cameras.md).
 
 ### Building a Windows Release Installer
 

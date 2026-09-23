@@ -58,8 +58,8 @@ Arduino-triggered recording is the default. BURST never silently changes modes a
 
 **Software pairing (approximate):** explicitly enable **Acquisition → Advanced →
 Allow approximate software pairing** when this limitation is acceptable. The choice
-resets when changing cameras or restarting BURST. It works with free-running cameras, including
-generic USB cameras. No trigger cable is required. BURST associates the next
+resets when changing cameras or restarting BURST. It works with free-running cameras
+exposed by a supported IC4 or Micro-Manager connection. No trigger cable is required. BURST associates the next
 available image in arrival order with each requested sample. The first row only
 establishes the trigger-counter baseline and has no image association. Different
 camera/serial delivery delays remain; equal counts do not prove timing alignment.
@@ -75,8 +75,8 @@ uses its documented fixed input instead of a selectable source. Micro-Manager
 translates its adapter's property names; TIScam uses Internal/External and cannot
 report the input, selector or edge. Those settings require native configuration and
 validation and are listed as unexposed in the manifest. See [camera adapter details](cameras.md#frame-rate-and-trigger-timing).
-Incompatible adapters report an error. Generic
-OpenCV cameras remain usable in Software pairing mode.
+Incompatible trigger interfaces report an error. Connected cameras without a
+supported trigger interface remain usable in Software pairing mode.
 
 Use **ZERO on the box** before each triggered recording and keep the box stopped
 while BURST arms. The normal preview runs before recording; once armed, the camera

@@ -15,24 +15,6 @@ def timestamped_filename(prefix, ext):
     return f"{prefix}_{ts}.{ext}"
 
 
-def list_cameras(max_idx=5):  # OpenCV camera listing
-    """Compatibility helper; use the camera registry in application code."""
-    try:
-        import cv2
-    except Exception:
-        return []
-    from cameras.opencv_backend import open_capture
-    cams = []
-    for index in range(min(max_idx, 3)):
-        cap = open_capture(cv2, index)
-        if cap is not None:
-            try:
-                cams.append(index)
-            finally:
-                cap.release()
-    return cams
-
-
 # --- ADDED FUNCTION ---
 def to_prop_name(key: str) -> str:
     """

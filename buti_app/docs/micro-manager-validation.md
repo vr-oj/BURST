@@ -9,7 +9,7 @@ claim about every release or camera.
 | --- | --- | --- |
 | Native IC4 / DMK 37BUX250 | Existing automated discovery, controls, default preview, arm/prepare/start ordering, recorder, playback and stop/restart regressions | Physical triggered recording against the release on this setup |
 | MM DemoCamera / DCam | Actual native acquisition, metadata, exposure, sensor ROI/full sensor, 16-bit format, rejected 32-bit rollback and continued preview | Not a physical camera |
-| MM SpinnakerC / Blackfly S BFS-U3-63S4M, serial 22096769 | Automatic discovery without a cfg; 3072×2048 Mono8 preview (19 frames in a three-second poll window); exposure/gain readback; automatic exposure/gain; Mono16; binning 2→1 (1536×1024→3072×2048); 640×480 sensor ROI→full sensor; FrameStart/Line0/RisingEdge/On readback; waiting without pulses; return to preview in about 0.84 s | Arduino-triggered recording, sparse Capture, missing-pulse detection with this hardware, exposure/force timing measurement |
+| MM SpinnakerC / Blackfly S BFS-U3-63S4M, serial 22096769 | Automatic discovery without a cfg; 3072×2048 Mono8 preview (9 frames in a three-second poll window); exposure/gain readback; automatic exposure/gain; Mono16; binning 2→1 (1536×1024→3072×2048); 640×480 sensor ROI→full sensor; FrameStart/Line0/RisingEdge/On readback; waiting without pulses; return to preview in about 0.89 s | Arduino-triggered recording, sparse Capture, missing-pulse detection with this hardware, exposure/force timing measurement |
 | MM TIScam / IC4 hardware | Adapter translation and stop-without-pulses behavior covered with test doubles | Compatible legacy driver/configuration and physical acquisition test |
 
 The user confirmed that the trigger cable is connected to the IC4 camera, not
@@ -31,8 +31,22 @@ receipt time, dimensions and ROI tags. These remain adapter diagnostics. They ar
 not camera exposure timestamps or trustworthy physical frame counters. Camera
 settings/readback and matching video/CSV counts do not certify physical timing.
 
-The full 205-test automated suite passed, including the native DemoCamera test.
+After removing the direct Spinnaker, GenTL and OpenCV camera integrations and their
+obsolete tests, all 188 tests passed, including the native DemoCamera test.
 Automated coverage also exercises profile migration/import/export, explicit mapping
 precedence, invalid mappings, integer/native units, missing bounds, dynamic locks,
 helper crashes/timeouts/cancellation, duplicate identities, multiple serials,
 unsupported layouts, sparse/None capture and counter/timestamp failures.
+
+The real SpinnakerC check was repeated after that removal with imports of PySpin,
+OpenCV, Harvester and the Python GenICam binding deliberately blocked in both the
+parent and helper. Discovery, preview, the controls listed above, no-pulse arming
+and return to preview succeeded; no control or restoration errors were reported.
+The adapter reported 3.2395 FPS at the start of this check; the short preview proves
+acquisition, not sustained 10 FPS or synchronized recording.
+
+The first repeat failed to load the adapter because the test terminal had inherited
+obsolete runtime paths from before the vendor SDK installation. Using the current
+Windows machine/user PATH resolved loading without copying DLLs or restoring a
+vendor-specific search in BURST. No persistent Windows environment settings were
+changed. Restart terminals/launchers after installing a vendor runtime.

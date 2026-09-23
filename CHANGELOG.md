@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep native IC4 as the primary camera connection and use Micro-Manager for
+  other cameras. Remove direct Spinnaker, GenTL, OpenCV capture and external
+  Python backend plugins, including their build dependencies. Micro-Manager
+  discovery, saved profiles, mapped controls and recording remain available.
 - Parse the BUTI v5.2 serial settings header and preserve its preload,
   deformation, rates, cycles, wire diameter, constant tension, and experiment
   type as appended columns in every sample row of the synchronized CSV. The

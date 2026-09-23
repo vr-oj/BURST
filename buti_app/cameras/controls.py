@@ -109,7 +109,7 @@ class CameraController:
 
 
 class EmptyControls:
-    """OpenCV cannot reliably report portable property units or ranges."""
+    """Empty snapshot for a connection that reports no camera controls."""
 
     def read_controls(self):
         return {}

@@ -39,7 +39,6 @@ DEFAULT_VIDEO_EXTENSION = "tif"
 DEFAULT_VIDEO_CODEC = None  # Not used when recording to TIFF
 SUPPORTED_FORMATS = ["tif"]
 DEFAULT_FPS = 10
-DEFAULT_CAMERA_INDEX = 0  # Default device index
 
 # Frame size fallback (actual size will be queried from camera at runtime)
 DEFAULT_FRAME_SIZE = (640, 480)  # (width, height)

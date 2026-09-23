@@ -58,7 +58,7 @@ class CameraLifecycleUiTests(unittest.TestCase):
 
     def test_mixed_selector_routes_modes_and_preserves_thread_until_finished(self):
         devices = [CameraDeviceInfo("ic4", "1", "DMK — IC4"),
-                   CameraDeviceInfo("spinnaker", "2", "Blackfly — Spinnaker")]
+                   CameraDeviceInfo("micromanager", "2", "Camera — Micro-Manager")]
         registry = Mock()
         registry.discover_cameras.return_value = devices
         registry.list_modes.return_value = [CameraMode(4, 2, "Mono8")]

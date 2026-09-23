@@ -1,4 +1,4 @@
-"""Real Micro-Manager acquisition; the historical OpenCV aliases are separate."""
+"""Micro-Manager acquisition through an isolated MMCore helper."""
 import logging
 import time
 import numpy as np

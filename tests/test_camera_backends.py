@@ -10,9 +10,9 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "buti_app"))
 from cameras import CameraDeviceInfo, CameraRegistry
 from cameras.controls import CameraControl, CameraController, IC4Controls
 from cameras.ic4_backend import IC4Backend
-from cameras.opencv_backend import OpenCVBackend, open_capture
+from cameras.micro_manager_backend import MicroManagerBackend
 from threads.sdk_camera_thread import SDKCameraThread
-from threads.micromanager_camera_thread import DevCameraThread
+from threads.mmcore_camera_thread import MMCoreCameraThread
 from ui.control_panels.camera_control_panel import CameraControlPanel
 from PyQt5.QtWidgets import QApplication
 sys.path.pop(0)
@@ -82,12 +82,12 @@ class CameraBackendTests(unittest.TestCase):
     def test_unified_discovery_and_backend_failure_isolation(self):
         sdk = NS(Library=Mock(), LogLevel=NS(INFO=1), LogTarget=NS(STDERR=1),
                  DeviceEnum=NS(devices=lambda: [NS(model_name="DMK", serial="123", unique_name="usb-id")]))
-        generic = CameraDeviceInfo("opencv", "0", "USB #0", native_info=NS(index=0))
+        generic = CameraDeviceInfo("micromanager", "0", "Camera — Micro-Manager")
         registry = CameraRegistry(importer=Mock(side_effect=ImportError))
         registry.backends = {"ic4": IC4Backend(sdk), "broken": Mock(discover=Mock(side_effect=RuntimeError)),
-                             "opencv": Mock(discover=lambda: [generic])}
+                             "micromanager": Mock(discover=lambda: [generic])}
         devices = registry.discover_cameras()
-        self.assertEqual([d.backend for d in devices], ["ic4", "opencv"])
+        self.assertEqual([d.backend for d in devices], ["ic4", "micromanager"])
         self.assertEqual((devices[0].id, devices[0].serial), ("usb-id", "123"))
         self.assertIn("IC4", devices[0].display_name)
         registry.close()
@@ -99,23 +99,22 @@ class CameraBackendTests(unittest.TestCase):
             thread = IC4Backend(Mock()).create_thread(CameraDeviceInfo("ic4", "a", "A", native_info="native"))
         self.assertIsInstance(thread, SDKCameraThread)
         self.assertEqual(thread._device_info, "native")
-        self.assertIsInstance(OpenCVBackend(Mock()).create_thread(
-            CameraDeviceInfo("opencv", "0", "USB", native_info={"index": 0})), DevCameraThread)
+        self.assertIsInstance(MicroManagerBackend(True).create_thread(
+            CameraDeviceInfo("micromanager", "0", "Camera", native_info={})), MMCoreCameraThread)
 
-    def test_opencv_fallback_releases_failed_handles_and_discovery_is_bounded(self):
-        bad, good = Mock(), Mock()
-        bad.isOpened.return_value = False
-        good.isOpened.return_value = True
-        cv = Mock(CAP_DSHOW=1, CAP_MSMF=2)
-        cv.VideoCapture.side_effect = [bad, good]
-        with patch("cameras.opencv_backend.sys.platform", "win32"):
-            self.assertIs(open_capture(cv, 0), good)
-        bad.release.assert_called_once()
-        with patch.dict(os.environ, {}, clear=True), patch("cameras.opencv_backend.open_capture", return_value=good) as opened:
-            devices = OpenCVBackend(cv).discover()
-        self.assertEqual([d.id for d in devices], ["0", "1", "2"])
-        self.assertEqual(opened.call_count, 3)
-        self.assertEqual(good.release.call_count, 3)
+    def test_registry_only_loads_ic4_and_micro_manager_even_with_all_enabled(self):
+        importer = Mock(side_effect=ImportError("not installed"))
+        for selection in ("auto", "all", "ic4,micromanager"):
+            importer.reset_mock()
+            registry = CameraRegistry(selection, importer=importer)
+            self.assertEqual([call.args[0] for call in importer.call_args_list], ["imagingcontrol4", "pymmcore"])
+            self.assertEqual(set(registry.unavailable), {"ic4", "micromanager"})
+
+    def test_removed_backend_filters_cannot_fall_back_or_load_a_vendor_sdk(self):
+        importer = Mock()
+        registry = CameraRegistry("spinnaker,gentl,opencv", importer=importer)
+        self.assertEqual(registry.discover_cameras(), [])
+        importer.assert_not_called()
 
     def test_commands_use_worker_and_ui_handles_missing_capabilities(self):
         adapter = Mock()
@@ -242,20 +241,6 @@ class CameraBackendTests(unittest.TestCase):
         grabber.device_close.assert_called_once()
         self.assertIsNone(thread.grabber)
         self.assertIsNone(thread._device_info)
-
-    def test_opencv_configuration_failure_releases_capture(self):
-        from threads import micromanager_camera_thread as module
-        capture = Mock()
-        capture.set.side_effect = RuntimeError("disconnected")
-        thread = DevCameraThread()
-        errors = []
-        thread.error.connect(lambda *args: errors.append(args))
-        with patch.object(module, "cv2", Mock()), patch.object(module, "open_capture", return_value=capture):
-            thread.run()
-        self.assertEqual(len(errors), 1)
-        capture.release.assert_called_once()
-        self.assertIsNone(thread._capture)
-
 
 if __name__ == "__main__":
     unittest.main()

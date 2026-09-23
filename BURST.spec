@@ -9,7 +9,7 @@ import os
 import runpy
 import importlib.util
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all, collect_entry_point
+from PyInstaller.utils.hooks import collect_all
 
 source_script = os.path.join("buti_app", "buti_app.py")
 icon_file = os.path.join("buti_app", "ui", "icons", "BURST.ico")
@@ -43,8 +43,10 @@ def _optional_module(name):
 hidden_imports = ["PyQt5.QtMultimedia"]
 camera_binaries = []
 camera_data = []
-excluded_modules = []
-for module in ("imagingcontrol4", "cv2", "harvesters", "genicam", "pymmcore"):
+# Cameras beyond IC4 use Micro-Manager's external adapters; never bundle the
+# removed capture bridges, even when they exist on the build PC.
+excluded_modules = ["PySpin", "_PySpin", "harvesters", "genicam", "cv2"]
+for module in ("imagingcontrol4", "pymmcore"):
     if _optional_module(module):
         datas, binaries, imports = collect_all(module)
         camera_data.extend(datas)
@@ -52,20 +54,6 @@ for module in ("imagingcontrol4", "cv2", "harvesters", "genicam", "pymmcore"):
         hidden_imports.extend(imports)
     else:
         excluded_modules.append(module)
-
-# Build-time opt-in: bundle the matching Python binding, but use the separately
-# installed Spinnaker runtime. Never sweep Program Files for proprietary DLLs.
-bundle_pyspin = os.environ.get("BURST_BUNDLE_PYSPIN", "0") == "1"
-if bundle_pyspin:
-    if not _optional_module("PySpin"):
-        raise SystemExit("BURST_BUNDLE_PYSPIN=1 requires the SDK's matching PySpin wheel in the build environment.")
-    hidden_imports.extend(["PySpin", "_PySpin"])
-else:
-    excluded_modules.extend(["PySpin", "_PySpin"])
-
-plugin_datas, plugin_imports = collect_entry_point("burst.camera_backends")
-camera_data.extend(plugin_datas)
-hidden_imports.extend(plugin_imports)
 
 data_files = [
     (
@@ -97,21 +85,6 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-
-# Dependency analysis can pull runtime DLLs along with _PySpin.pyd. Leave files
-# from Spinnaker installations out; the vendor runtime installer owns them.
-def _external_spinnaker_file(entry):
-    destination, source, *_ = entry
-    path = str(source).replace("\\", "/").lower()
-    name = Path(destination).name.lower()
-    binding = name.endswith(".pyd") and "pyspin" in name
-    runtime_path = "/spinnaker/" in path or "/pyspin/" in path
-    runtime_name = name.endswith((".dll", ".cti")) and ("spinnaker" in name or name.startswith("flir_gentl"))
-    return not binding and (runtime_path or runtime_name)
-
-if bundle_pyspin:
-    a.binaries = [entry for entry in a.binaries if not _external_spinnaker_file(entry)]
-    a.datas = [entry for entry in a.datas if not _external_spinnaker_file(entry)]
 
 pyz = PYZ(a.pure)
 

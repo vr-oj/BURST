@@ -94,7 +94,7 @@ class MicroManagerTests(unittest.TestCase):
             client_factory=lambda **kw: LocalClient(sdk or self.sdk))
 
     def test_registry_profiles_do_not_open_hardware_on_refresh(self):
-        registry = CameraRegistry("micromanager", importer=lambda _: self.sdk, plugin_entries=[])
+        registry = CameraRegistry("micromanager", importer=lambda _: self.sdk)
         registry.set_micro_manager_profiles([self.profile])
         device, = registry.discover_cameras()
         self.assertEqual(device.backend, "micromanager")

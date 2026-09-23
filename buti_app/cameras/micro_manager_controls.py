@@ -29,7 +29,6 @@ class MicroManagerControls:
         self.bindings = {}
         self.issues = {}
         self._idle_writable = set()
-        self.fps_property = "Frame Rate" if session.trigger.library == "SpinnakerC" else "AcquisitionFrameRate"
         self.read_controls()  # Reject invalid saved mappings before starting acquisition.
 
     def native_controls(self):
