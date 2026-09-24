@@ -1,5 +1,6 @@
 import logging
 import math
+import sys
 from typing import Optional
 
 from PyQt5.QtCore import Qt, QTimer, QSignalBlocker, pyqtSignal
@@ -16,12 +17,21 @@ from PyQt5.QtWidgets import (
     QSlider,
     QSizePolicy,
     QPushButton,
-    QLineEdit,
     QMessageBox,
 )
 from ..style_constants import PANEL_STYLESHEET
 
 log = logging.getLogger(__name__)
+
+
+class CameraValueSpinBox(QDoubleSpinBox):
+    def textFromValue(self, value):
+        text = super().textFromValue(value)
+        # Keep precision for adapter readback without filling the field with
+        # trailing zeros. Controls with known limits keep their usual format.
+        if self.property("compactNumericText") and self.locale().decimalPoint() in text:
+            text = text.rstrip("0").rstrip(self.locale().decimalPoint())
+        return text
 
 
 class CameraControlPanel(QWidget):
@@ -37,7 +47,6 @@ class CameraControlPanel(QWidget):
         self._gain_scale = 1
         self._framerate_scale = 1
         self._unit_labels = {}
-        self._numeric_entries = {}
         self._control_error = ""
 
         self._auto_update_timer = QTimer(self)
@@ -83,7 +92,7 @@ class CameraControlPanel(QWidget):
         self._label_width = 96 if self._embedded else 132
 
         # Exposure
-        self.exposure_spin = QDoubleSpinBox()
+        self.exposure_spin = CameraValueSpinBox()
         self.exposure_spin.setDecimals(2)
         self.exposure_spin.setEnabled(False)
         self.exposure_spin.setProperty("cssClass", "monoInput")
@@ -112,7 +121,7 @@ class CameraControlPanel(QWidget):
         )
 
         # Gain
-        self.gain_spin = QDoubleSpinBox()
+        self.gain_spin = CameraValueSpinBox()
         self.gain_spin.setDecimals(2)
         self.gain_spin.setEnabled(False)
         self.gain_spin.setProperty("cssClass", "monoInput")
@@ -141,7 +150,7 @@ class CameraControlPanel(QWidget):
         )
 
         # Frame rate
-        self.framerate_spin = QDoubleSpinBox()
+        self.framerate_spin = CameraValueSpinBox()
         self.framerate_spin.setDecimals(1)
         self.framerate_spin.setEnabled(False)
         self.framerate_spin.setProperty("cssClass", "monoInput")
@@ -184,16 +193,8 @@ class CameraControlPanel(QWidget):
             policy.setRetainSizeWhenHidden(True)
             button.setSizePolicy(policy)
             header_row.addWidget(button)
-        for name, spin in (("exposure", self.exposure_spin), ("gain", self.gain_spin), ("fps", self.framerate_spin)):
-            entry = QLineEdit(spin.parentWidget())
-            entry.setMaximumWidth(110)
-            entry.setMinimumHeight(26)
+        for spin in (self.exposure_spin, self.gain_spin, self.framerate_spin):
             spin.setMinimumHeight(26)
-            entry.setProperty("cssClass", "monoInput")
-            spin.parentWidget().layout().insertWidget(0, entry)
-            entry.hide()
-            entry.editingFinished.connect(lambda n=name: self._set_numeric_entry(n))
-            self._numeric_entries[name] = entry
 
         if not self._embedded:
             panel_layout.addStretch()
@@ -300,25 +301,41 @@ class CameraControlPanel(QWidget):
         for name, spin, slider, scale_name, factor, auto_name in rows:
             prop = capabilities.get(name)
             auto = capabilities.get(auto_name)
-            entry = self._numeric_entries[name]
             unbounded = bool(prop and not prop.limits_known)
-            entry.setVisible(unbounded)
-            spin.setVisible(not unbounded)
             self._unit_labels[spin].setText("ms" if name == "exposure" else
                 (prop.unit if prop and prop.unit else "dB" if name == "gain" else "fps"))
             enabled = bool(prop and prop.writable and not self.is_recording
                            and not (auto and auto.value != "Off"))
             spin.setEnabled(enabled)
-            entry.setEnabled(enabled)
             slider.setEnabled(enabled and not unbounded)
-            tooltip = "Range not reported by the adapter; enter a numeric value." if unbounded else (
+            tooltip = ("Type a value or use the arrows. Press Enter to apply typed changes. "
+                       "The camera checks which values it accepts.") if unbounded else (
                 issues.get(name, "Not exposed by this camera connection.") if prop is None else "")
-            slider.setToolTip(tooltip)
-            entry.setToolTip(tooltip)
+            slider.setToolTip("The camera does not report a slider range. Use the number field instead."
+                              if unbounded else tooltip)
             spin.setToolTip(tooltip)
+            spin.setProperty("compactNumericText", unbounded)
+            spin.setKeyboardTracking(not unbounded)
+            spin.setMaximumWidth(110 if unbounded else 16777215)
             if unbounded:
-                if not entry.hasFocus():
-                    entry.setText(f"{float(prop.value) / factor:g}")
+                # Leave incomplete typing alone; arrow/committed edits can show
+                # the worker's readback even while the control retains focus.
+                if spin.hasFocus() and spin.lineEdit().isModified():
+                    continue
+                value = float(prop.value) / factor
+                if not math.isfinite(value):
+                    spin.setEnabled(False)
+                    continue
+                blocker = QSignalBlocker(spin)
+                integer = prop.value_type == "int" and factor == 1
+                spin.setDecimals(0 if integer else 6)
+                # These are storage limits for the editor, not camera limits.
+                # The adapter remains responsible for accepting/rejecting values.
+                spin.setRange(-sys.float_info.max, sys.float_info.max)
+                step = prop.increment / factor
+                spin.setSingleStep(step if math.isfinite(step) and step > 0 else 1 if integer else 0.1)
+                spin.setValue(value)
+                del blocker
                 continue
             if prop is None or spin.hasFocus() or slider.isSliderDown():
                 continue
@@ -329,8 +346,10 @@ class CameraControlPanel(QWidget):
                 continue
             step = prop.increment / factor or max((hi - lo) / 100, 0.001)
             blockers = [QSignalBlocker(spin), QSignalBlocker(slider)]
+            decimals = 1 if name == "fps" else 2
             if 0 < step < 1:
-                spin.setDecimals(min(6, max(spin.decimals(), math.ceil(-math.log10(step)))))
+                decimals = min(6, max(decimals, math.ceil(-math.log10(step))))
+            spin.setDecimals(decimals)
             # QSlider uses signed 32-bit integers even for cameras with huge ranges.
             scale = min(10 ** spin.decimals(), (2**30) / max(abs(lo), abs(hi), 1))
             setattr(self, scale_name, scale)
@@ -377,19 +396,6 @@ class CameraControlPanel(QWidget):
         if self.controller is not None and not self.is_recording:
             from ui.camera_properties_dialog import CameraPropertiesDialog
             CameraPropertiesDialog(self).exec_()
-
-    def _set_numeric_entry(self, name):
-        entry = self._numeric_entries[name]
-        if not entry.isEnabled() or not entry.isVisible():
-            return
-        try:
-            value = float(entry.text())
-            if not math.isfinite(value):
-                raise ValueError()
-        except ValueError:
-            entry.setToolTip("Enter a finite number.")
-            return
-        self._set_value(name, value * (1000 if name == "exposure" else 1))
 
     def _set_value(self, name, value):
         if self.controller is not None and not self.is_recording:

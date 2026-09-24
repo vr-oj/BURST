@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep up/down arrows on exposure, gain, and frame-rate fields when a
+  Micro-Manager adapter does not report limits. Apply typed values after editing,
+  preserve camera readback, and keep sliders disabled until a range is available.
 - Put Micro-Manager Camera Setup at the end of the Camera Device dropdown,
   including when no cameras are found, and remove its Acquisition menu entry.
 - Simplify Micro-Manager camera setup to finding a camera or loading a saved

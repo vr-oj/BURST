@@ -79,7 +79,10 @@ milliseconds to the existing exposure UI. Documented aliases map gain, automatic
 modes, FPS and pixel format into the normal controls. Ambiguous names are left
 unmapped with an explanation. Gain uses documented units (SpinnakerC: dB), or
 **camera units** when unknown. Writable numeric controls without reported limits
-use text entry and a disabled slider. BURST does not invent a camera range.
+use numeric fields with up/down arrows and a disabled slider. Type a value and
+press Enter (or leave the field), or use the arrows; BURST shows the camera's
+readback. The camera validates values when its limits are unknown. BURST does
+not invent a camera range.
 Controls locked only during streaming can be changed by briefly stopping preview;
 permanently read-only and initialization properties stay disabled. Applied values
 come from camera readback, including quantization. Unsupported layouts are rejected
