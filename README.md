@@ -123,6 +123,20 @@ Key threads:
 ---
 ## Installation
 
+### Platform support
+
+BURST's current packaged and tested target is Windows. Native
+[IC Imaging Control 4](https://www.theimagingsource.com/en-us/support/download/)
+supports Windows and Linux, not macOS.
+
+A future macOS build could use Micro-Manager without native IC4, but requires
+Mac-specific dependency and packaging work plus hardware validation on a Mac.
+[Micro-Manager offers a Mac build](https://micro-manager.org/Download_Micro-Manager_Latest_Release),
+but each camera needs a compatible Mac adapter and vendor driver; the
+[SpinnakerC adapter](https://micro-manager.org/SpinnakerC) used for BURST's FLIR
+checks currently lists Windows 64-bit support. Windows adapter DLLs cannot be used
+in a Mac build. BURST does not currently provide a macOS installer.
+
 ### Windows Executable
 1. Download `BURST_Setup_<version>.exe` from the GitHub release.
 2. Run the installer and follow the setup wizard.
@@ -157,7 +171,8 @@ remove that warning for an official public release.
 ### Building a Windows Release Installer
 
 BURST uses one version source: `buti_app/VERSION`. The current version is
-`1.4.0`. Update only that file when preparing another release.
+`1.5.0`. Update that file for application/installer versioning, and update the
+changelog and release instructions for each release.
 
 Install the requirements and pinned PyInstaller version once:
 
@@ -176,13 +191,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 The script checks the Python environment, runs all tests, builds BURST with the
 repository's PyInstaller spec, compiles the Inno Setup installer, and writes:
 
-- `installer_output\BURST_Setup_1.4.0.exe`
-- `installer_output\BURST_Setup_1.4.0.exe.sha256`
+- `installer_output\BURST_Setup_1.5.0.exe`
+- `installer_output\BURST_Setup_1.5.0.exe.sha256`
 
 BURST releases are built on the target Windows packaging computer and uploaded
 manually; GitHub Actions is not used. After the build passes hardware testing,
-merge the release commit into `main`, create the matching `v1.4.0` tag and
-GitHub release, paste the `1.4.0` section from `CHANGELOG.md`, and attach both
+merge the release commit into `main`, create the matching `v1.5.0` tag and
+GitHub release, paste the `1.5.0` section from `CHANGELOG.md`, and attach both
 files above.
 
 ---

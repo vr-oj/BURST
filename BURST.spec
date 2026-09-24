@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller build specification for BURST.
 
-This spec collects the application icons and stylesheet so the GUI has a
-consistent, polished look across all platforms.
+This spec collects the application resources for the Windows release build.
+Other platforms require their own packaging and hardware validation.
 """
 
 import os

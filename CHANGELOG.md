@@ -1,7 +1,27 @@
 # Changelog
 
-## Unreleased
+## 1.5.0
 
+- Add optional Micro-Manager camera support alongside native IC4. Find compatible
+  cameras or import a configuration, remember successful connections, and expose
+  the adapter's available exposure, gain, automatic modes, frame rate and pixel
+  format controls. Micro-Manager adapters and vendor drivers remain external.
+- Run Micro-Manager discovery and acquisition in isolated helper processes so
+  native adapter crashes do not close BURST. Discovery is cancellable and bounded,
+  with partial results and guidance for cameras requiring manual configuration.
+- Add reported binning, full-sensor acquisition and sensor ROI controls, plus
+  optional saved property/trigger mappings and camera profile import/export.
+- Keep preview free-running and configure/read back external triggering at the
+  recording boundary. Prepare recording files before starting the Arduino, then
+  restore preview with image settings preserved. Failed arming does not start the
+  Arduino or silently select approximate recording.
+- Follow Arduino Capture counter changes, including sparse capture and force-only
+  samples. Preserve all force rows, associate requested images, and stop/report
+  recording lag or invalid counters/timestamps. Approximate software pairing is
+  an explicit advanced choice and is identified in recording metadata.
+- Preserve full-resolution IC4 acquisition choices and avoid querying unsupported
+  continuous-property increments. Request 10 FPS preview where supported and
+  provide guidance for slower cameras and matching Arduino Capture settings.
 - Clarify the main recording workflow with Run without recording, a cancellable
   Preparing state, and short reasons when recording is unavailable. Remove
   unsupported Home/Step buttons, label the read-only box dialog Box status, and
@@ -17,14 +37,20 @@
 - Keep camera input rows readable when Micro-Manager controls or adapter warnings
   appear. Place camera properties and warning details in the settings heading
   and keep recording status on one line.
-- Keep native IC4 as the primary camera connection and use Micro-Manager for
-  other cameras. Remove direct Spinnaker, GenTL, OpenCV capture and external
-  Python backend plugins, including their build dependencies. Micro-Manager
-  discovery, saved profiles, mapped controls and recording remain available.
+- Use native IC4 or Micro-Manager for camera connections. Retire the older OpenCV
+  developer camera fallback; direct Spinnaker, GenTL and external Python camera
+  plugins are not included in this release.
 - Parse the BUTI v5.2 serial settings header and preserve its preload,
   deformation, rates, cycles, wire diameter, constant tension, and experiment
   type as appended columns in every sample row of the synchronized CSV. The
   same snapshot is retained in TIFF metadata and the run recovery manifest.
+
+For synchronized recording, connect the Arduino trigger cable and use **ZERO on
+the box before each run**. BURST follows the published firmware's Start/Stop
+commands; experiment settings must be changed on the box. Image/row association
+checks do not certify physical exposure timing. See the
+[camera validation record](buti_app/docs/micro-manager-validation.md) for completed
+checks and remaining hardware validation. This release targets Windows.
 
 ## 1.4.0
 
