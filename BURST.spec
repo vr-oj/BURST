@@ -1,13 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller build specification for BURST.
 
-This spec collects the application icons and stylesheet so the GUI has a
-consistent, polished look across all platforms.
+This spec collects the application resources for the Windows release build.
+Other platforms require their own packaging and hardware validation.
 """
 
 import os
 import runpy
+import importlib.util
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
 
 source_script = os.path.join("buti_app", "buti_app.py")
 icon_file = os.path.join("buti_app", "ui", "icons", "BURST.ico")
@@ -31,24 +33,27 @@ def _write_windows_version_resource():
 version_resource = _write_windows_version_resource()
 
 
-def _find_imagingcontrol4_root():
+def _optional_module(name):
     try:
-        import importlib.util
-        spec = importlib.util.find_spec("imagingcontrol4")
-        if spec and spec.submodule_search_locations:
-            root = Path(spec.submodule_search_locations[0])
-            if root.exists():
-                return root
-    except (ImportError, ValueError):
-        pass
-    return None
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
 
 
-imagingcontrol4_root = _find_imagingcontrol4_root()
-if imagingcontrol4_root is None:
-    raise SystemExit(
-        "Unable to locate the imagingcontrol4 package. Install it into your active virtual environment before building."
-    )
+hidden_imports = ["PyQt5.QtMultimedia"]
+camera_binaries = []
+camera_data = []
+# Cameras beyond IC4 use Micro-Manager's external adapters; never bundle the
+# removed capture bridges, even when they exist on the build PC.
+excluded_modules = ["PySpin", "_PySpin", "harvesters", "genicam", "cv2"]
+for module in ("imagingcontrol4", "pymmcore"):
+    if _optional_module(module):
+        datas, binaries, imports = collect_all(module)
+        camera_data.extend(datas)
+        camera_binaries.extend(binaries)
+        hidden_imports.extend(imports)
+    else:
+        excluded_modules.append(module)
 
 data_files = [
     (
@@ -64,19 +69,19 @@ data_files = [
     (os.path.join("buti_app", "VERSION"), "buti_app"),
 ]
 
-data_files.append((str(imagingcontrol4_root / "*"), "imagingcontrol4"))
+data_files.extend(camera_data)
 
 
 a = Analysis(
     [source_script],
     pathex=[],
-    binaries=[],
+    binaries=camera_binaries,
     datas=data_files,
-    hiddenimports=["imagingcontrol4", "PyQt5.QtMultimedia"],
+    hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
+    runtime_hooks=[os.path.join("buti_app", "hooks", "mm_worker_bootstrap.py")],
+    excludes=excluded_modules,
     noarchive=False,
     optimize=0,
 )

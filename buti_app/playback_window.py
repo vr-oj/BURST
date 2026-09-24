@@ -1,6 +1,7 @@
 import sys
 import os
 import csv
+import json
 import tempfile
 from collections import OrderedDict
 import numpy as np
@@ -147,6 +148,24 @@ class PlaybackLoader(QObject):
                 total = len(tif.pages)
                 if total == 0:
                     raise ValueError("The TIFF does not contain any frames.")
+                # New sparse recordings carry the exact associated force in each TIFF page.
+                # Never zip sparse images with the first N rows of the full-force CSV.
+                page_forces = []
+                mapped = False
+                for page in tif.pages:
+                    try:
+                        meta = json.loads(page.description or "{}")
+                    except (ValueError, TypeError):
+                        meta = {}
+                    if isinstance(meta, dict) and "sample_index" in meta:
+                        mapped = True
+                        page_forces.append(float(meta["force"]))
+                    else:
+                        page_forces.append(None)
+                if mapped:
+                    if any(value is None for value in page_forces):
+                        raise ValueError("Some images are missing their force-sample association.")
+                    forces = page_forces
                 first_frame = tif.pages[0].asarray()
                 self.loaded.emit(forces, first_frame, total)
                 self.progress.emit(total, total)

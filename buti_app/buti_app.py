@@ -1,17 +1,17 @@
 # File: buti_app/buti_app.py
 
 import sys
+if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--burst-mm-worker":
+    from cameras.micro_manager_process import worker_main
+    worker_main(int(sys.argv[2]))
+    sys.exit(0)
+
 import os
 import re
 import traceback
 import logging
 import platform
 from logging.handlers import RotatingFileHandler
-try:
-    import imagingcontrol4 as ic4  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency
-    ic4 = None
-
 from PyQt5.QtWidgets import QApplication, QMessageBox, QStyleFactory
 from PyQt5.QtCore import Qt, QCoreApplication, QUrl
 from PyQt5.QtGui import (
@@ -181,28 +181,6 @@ def main_app_entry():
     if hasattr(Qt, "AA_UseHighDpiPixmaps"):
         QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
-    # ─── Initialize IC4 globally so MainWindow can enumerate devices ─────────
-    ic4_initialized = False
-    if ic4 is not None and config.CAMERA_BACKEND == "ic4":
-        try:
-            ic4.Library.init(
-                api_log_level=ic4.LogLevel.INFO, log_targets=ic4.LogTarget.STDERR
-            )
-            ic4_initialized = True
-            log.info("Global IC4 Library.init() succeeded.")
-        except Exception as e:
-            log.error(f"Could not initialize IC4 in main thread: {e}")
-            # You might still allow the UI to start (with an empty device list),
-            # or choose to exit right here with sys.exit(1).
-    else:
-        if ic4 is None:
-            log.info("imagingcontrol4 not available; running without IC4 backend.")
-        else:
-            log.info(
-                "Skipping IC4 initialization because backend '%s' is active.",
-                config.CAMERA_BACKEND,
-            )
-
     # Create the QApplication
     app = QApplication(sys.argv)
     apply_dark_theme(app)
@@ -329,12 +307,6 @@ def main_app_entry():
 
     exit_code = app.exec_()
     log.info(f"Application event loop ended with exit code {exit_code}.")
-
-    if ic4_initialized:
-        try:
-            ic4.Library.shutdown()
-        except Exception:
-            pass
 
     sys.exit(exit_code)
 

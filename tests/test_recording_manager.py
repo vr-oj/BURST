@@ -27,6 +27,32 @@ except ImportError:  # pragma: no cover - optional recording dependencies
 
 @unittest.skipIf(RecordingManager is None, "Recording dependencies are unavailable")
 class RecordingManagerTests(unittest.TestCase):
+    def test_camera_backlog_stops_and_preserves_reviewable_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original = recording_manager_module.MIN_FREE_SPACE_GB
+            recording_manager_module.MIN_FREE_SPACE_GB = 0
+            try:
+                manager = RecordingManager(directory)
+                stopped, finalized = [], []
+                manager.synchronization_lost.connect(stopped.append)
+                manager.finalized.connect(lambda *args: finalized.append(args))
+                manager.start_recording()
+                image = QImage(4, 2, QImage.Format_Grayscale8)
+                image.fill(50)
+                manager.append_force(0, 0, 0, 0, 1)
+                manager.append_frame(image, None)
+                for i in range(1, 13):
+                    manager.append_force(i / 10, i, 0, 0, 1)
+                self.assertEqual(len(stopped), 1)
+                self.assertEqual(len(finalized), 1)
+                csv_path, _, summary = finalized[0]
+                self.assertNotEqual(summary.status, "passed")
+                self.assertEqual(summary.frames_written, 1)
+                with open(csv_path, newline="") as handle:
+                    self.assertEqual(len(list(csv.reader(handle))), 14)
+            finally:
+                recording_manager_module.MIN_FREE_SPACE_GB = original
+
     @classmethod
     def setUpClass(cls):
         cls.app = QCoreApplication.instance() or QCoreApplication([])
@@ -55,7 +81,8 @@ class RecordingManagerTests(unittest.TestCase):
                         image.setPixelColor(x, y, QColor(value, value, value))
 
                 manager.append_force(1.25, 7, 0.5, 2, 3.5)
-                manager.append_frame(image, None)
+                # Raw metadata can come from any SDK; recording must use the QImage.
+                manager.append_frame(image, {"backend": "synthetic", "frame_id": 42})
                 manager._flush_recovery_outputs()
                 manager.request_stop()
             finally:

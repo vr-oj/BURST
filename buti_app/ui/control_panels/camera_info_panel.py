@@ -70,6 +70,15 @@ class CameraInfoPanel(QWidget):
         header.addWidget(self.stream_details)
 
         panel_layout.addLayout(header)
+        rate_row = QHBoxLayout()
+        self.rate_status = QLabel("Target: 10 FPS · Start the camera to measure delivery rate.")
+        self.rate_status.setWordWrap(False)
+        self.rate_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.rate_status.setProperty("cssClass", "detailValue")
+        rate_row.addWidget(self.rate_status, 1)
+        self.rate_help_button = QPushButton("Camera rate help")
+        rate_row.addWidget(self.rate_help_button)
+        panel_layout.addLayout(rate_row)
         panel_layout.addWidget(self._create_divider())
 
         self.settings_body_layout = QHBoxLayout()
@@ -82,9 +91,6 @@ class CameraInfoPanel(QWidget):
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(6)
 
-        controls_header = QLabel("IMAGE SETTINGS")
-        controls_header.setProperty("cssClass", "microLabel")
-        controls_layout.addWidget(controls_header)
         self.embedded_controls_layout = QVBoxLayout()
         self.embedded_controls_layout.setContentsMargins(0, 0, 0, 0)
         self.embedded_controls_layout.setSpacing(0)

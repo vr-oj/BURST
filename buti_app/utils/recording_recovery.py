@@ -75,6 +75,12 @@ def finalize_partial_pair(
     final_csv_path: str,
     final_tiff_path: str,
 ) -> tuple[str, str]:
+    if not partial_tiff_path:
+        source, target = Path(partial_csv_path), Path(final_csv_path)
+        if target.exists():
+            raise FileExistsError(f"Recording destination already exists: {target.name}")
+        source.rename(target)
+        return str(target), ""
     sources = (Path(partial_csv_path), Path(partial_tiff_path))
     targets = (Path(final_csv_path), Path(final_tiff_path))
     for source in sources:
@@ -109,7 +115,7 @@ def complete_manifest(
     data["state"] = state
     data["completed_at"] = datetime.now(timezone.utc).isoformat()
     data["files"]["csv"] = Path(csv_path).name
-    data["files"]["tiff"] = Path(tiff_path).name
+    data["files"]["tiff"] = Path(tiff_path).name if tiff_path else ""
     data["integrity"] = summary.to_dict()
     _write_json(partial_path, data)
     final_path = partial_path.with_name(FINAL_MANIFEST_NAME)
@@ -123,7 +129,7 @@ def update_manifest_file_names(folder: str, csv_path: str, tiff_path: str) -> No
         return
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     data.setdefault("files", {})["csv"] = Path(csv_path).name
-    data["files"]["tiff"] = Path(tiff_path).name
+    data["files"]["tiff"] = Path(tiff_path).name if tiff_path else ""
     _write_json(manifest_path, data)
 
 
@@ -175,7 +181,7 @@ def _csv_stats(path: Path) -> tuple[int, float, int | None, int | None, list[str
                 first_index = frame_index
             elif (
                 last_index is not None
-                and frame_index != last_index + 1
+                and ((frame_index < last_index or frame_index > last_index + 1) if "image_requested" in row else frame_index != last_index + 1)
                 and len(issues) < 5
             ):
                 issues.append(
@@ -194,20 +200,27 @@ def inspect_recoverable_manifest(manifest_path: str) -> tuple[dict, RecordingSum
     files = data["files"]
     csv_path = manifest.parent / files["partial_csv"]
     tiff_path = manifest.parent / files["partial_tiff"]
-    if not csv_path.exists() or not tiff_path.exists():
+    sparse = data.get("acquisition", {}).get("capture_mode") in {"box", "force_only"}
+    if not csv_path.exists() or (not tiff_path.exists() and not sparse):
         raise FileNotFoundError("The interrupted recording is missing its CSV or TIFF file.")
 
     samples, duration, first_index, last_index, issues = _csv_stats(csv_path)
     try:
         import tifffile
 
-        with tifffile.TiffFile(tiff_path) as recording:
-            frames = len(recording.pages)
+        frames = 0
+        if tiff_path.exists():
+            with tifffile.TiffFile(tiff_path) as recording:
+                frames = len(recording.pages)
     except Exception as exc:
         raise OSError(f"The partial TIFF could not be read: {exc}") from exc
 
-    if samples != frames:
-        issues.append(f"Recovered counts differ: {samples} samples and {frames} frames.")
+    expected = samples
+    if sparse:
+        with csv_path.open(newline="", encoding="utf-8-sig") as stream:
+            expected = sum(int(row.get("image_requested") or 0) for row in csv.DictReader(stream))
+    if expected != frames:
+        issues.append(f"Recovered counts differ: {expected} requested images and {frames} frames.")
     issues.insert(0, "Recovered after an interrupted recording; review before analysis.")
     summary = RecordingSummary(
         status="recovered",
@@ -215,8 +228,11 @@ def inspect_recoverable_manifest(manifest_path: str) -> tuple[dict, RecordingSum
         frames_written=frames,
         duration_s=duration,
         csv_size_bytes=csv_path.stat().st_size,
-        tiff_size_bytes=tiff_path.stat().st_size,
-        pending_samples=max(0, samples - frames),
+        tiff_size_bytes=tiff_path.stat().st_size if tiff_path.exists() else 0,
+        pending_samples=max(0, expected - frames),
+        images_requested=expected,
+        capture_mode=data.get("acquisition", {}).get("capture_mode", "every_sample_legacy"),
+        timing_mode=data.get("acquisition", {}).get("timing_mode", "software"),
         first_frame_index=first_index,
         last_frame_index=last_index,
         issues=issues,
@@ -232,12 +248,12 @@ def recover_partial_recording(
     files = data["files"]
     csv_path, tiff_path = finalize_partial_pair(
         str(manifest.parent / files["partial_csv"]),
-        str(manifest.parent / files["partial_tiff"]),
+        str(manifest.parent / files["partial_tiff"]) if (manifest.parent / files["partial_tiff"]).exists() else "",
         str(manifest.parent / files["csv"]),
-        str(manifest.parent / files["tiff"]),
+        str(manifest.parent / files["tiff"]) if (manifest.parent / files["partial_tiff"]).exists() else "",
     )
     summary.csv_size_bytes = Path(csv_path).stat().st_size
-    summary.tiff_size_bytes = Path(tiff_path).stat().st_size
+    summary.tiff_size_bytes = Path(tiff_path).stat().st_size if tiff_path else 0
     try:
         complete_manifest(
             manifest_path,

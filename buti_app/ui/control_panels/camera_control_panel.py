@@ -1,8 +1,9 @@
 import logging
 import math
+import sys
 from typing import Optional
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QSignalBlocker, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget,
     QFrame,
@@ -15,22 +16,38 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QSlider,
     QSizePolicy,
+    QPushButton,
+    QMessageBox,
 )
 from ..style_constants import PANEL_STYLESHEET
 
 log = logging.getLogger(__name__)
 
 
+class CameraValueSpinBox(QDoubleSpinBox):
+    def textFromValue(self, value):
+        text = super().textFromValue(value)
+        # Keep precision for adapter readback without filling the field with
+        # trailing zeros. Controls with known limits keep their usual format.
+        if self.property("compactNumericText") and self.locale().decimalPoint() in text:
+            text = text.rstrip("0").rstrip(self.locale().decimalPoint())
+        return text
+
+
 class CameraControlPanel(QWidget):
+    camera_settings_changed = pyqtSignal()
+
     def __init__(self, parent=None, *, embedded=False):
         super().__init__(parent)
         self._embedded = bool(embedded)
-        self.grabber = None
+        self.controller = None
         self.is_recording = False
         self._exp_scale = 1
         self._exp_unit_factor = 1000.0  # property is in µs, display in ms
         self._gain_scale = 1
         self._framerate_scale = 1
+        self._unit_labels = {}
+        self._control_error = ""
 
         self._auto_update_timer = QTimer(self)
         self._auto_update_timer.setInterval(500)
@@ -54,16 +71,15 @@ class CameraControlPanel(QWidget):
             panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(8)
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+        title_label = QLabel("IMAGE SETTINGS" if self._embedded else "Camera Controls")
+        title_label.setProperty("cssClass", "microLabel" if self._embedded else "panelTitle")
+        header_row.addWidget(title_label)
+        header_row.addStretch()
+        panel_layout.addLayout(header_row)
         if not self._embedded:
-            header_row = QHBoxLayout()
-            header_row.setContentsMargins(0, 0, 0, 0)
-            header_row.setSpacing(8)
-
-            title_label = QLabel("Camera Controls")
-            title_label.setProperty("cssClass", "panelTitle")
-            header_row.addWidget(title_label)
-            header_row.addStretch()
-            panel_layout.addLayout(header_row)
             panel_layout.addWidget(self._create_divider())
 
         control_grid = QGridLayout()
@@ -76,7 +92,7 @@ class CameraControlPanel(QWidget):
         self._label_width = 96 if self._embedded else 132
 
         # Exposure
-        self.exposure_spin = QDoubleSpinBox()
+        self.exposure_spin = CameraValueSpinBox()
         self.exposure_spin.setDecimals(2)
         self.exposure_spin.setEnabled(False)
         self.exposure_spin.setProperty("cssClass", "monoInput")
@@ -105,7 +121,7 @@ class CameraControlPanel(QWidget):
         )
 
         # Gain
-        self.gain_spin = QDoubleSpinBox()
+        self.gain_spin = CameraValueSpinBox()
         self.gain_spin.setDecimals(2)
         self.gain_spin.setEnabled(False)
         self.gain_spin.setProperty("cssClass", "monoInput")
@@ -134,7 +150,7 @@ class CameraControlPanel(QWidget):
         )
 
         # Frame rate
-        self.framerate_spin = QDoubleSpinBox()
+        self.framerate_spin = CameraValueSpinBox()
         self.framerate_spin.setDecimals(1)
         self.framerate_spin.setEnabled(False)
         self.framerate_spin.setProperty("cssClass", "monoInput")
@@ -160,8 +176,25 @@ class CameraControlPanel(QWidget):
         self.pf_combo = QComboBox()
         self.pf_combo.setEnabled(False)
         self.pf_combo.setProperty("cssClass", "monoInput")
+        self.pf_combo.setMinimumHeight(26)
         self.pf_combo.currentIndexChanged.connect(self._on_pf_changed)
         self._add_field_row(control_grid, 3, "Pixel Format", self.pf_combo)
+        self.properties_button = QPushButton("Camera properties…")
+        self.properties_button.setVisible(False)
+        self.properties_button.clicked.connect(self._show_properties)
+        self.control_message = QPushButton("Setting not applied…")
+        self.control_message.setStyleSheet("color: #f3c969; background: transparent; border: none;")
+        self.control_message.clicked.connect(self._show_control_error)
+        self.control_message.hide()
+        for button in (self.control_message, self.properties_button):
+            # These actions must not add rows or change the card's height when
+            # a connection gains capabilities or reports a long adapter error.
+            policy = button.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            button.setSizePolicy(policy)
+            header_row.addWidget(button)
+        for spin in (self.exposure_spin, self.gain_spin, self.framerate_spin):
+            spin.setMinimumHeight(26)
 
         if not self._embedded:
             panel_layout.addStretch()
@@ -204,6 +237,7 @@ class CameraControlPanel(QWidget):
         value_layout.addWidget(spinbox)
 
         unit_label = QLabel(unit_text)
+        self._unit_labels[spinbox] = unit_label
         unit_label.setProperty("cssClass", "microLabel")
         unit_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         value_layout.addWidget(unit_label)
@@ -238,241 +272,151 @@ class CameraControlPanel(QWidget):
         if not self._auto_update_timer.isActive():
             self._auto_update_timer.start()
 
+    def set_controller(self, controller):
+        self.controller = controller
+        self._refresh_auto_values()
+        if controller is not None:
+            self.start_auto_update()
+        else:
+            self.stop_auto_update()
+
     def set_recording_state(self, recording):
-        self.is_recording = recording
-        log.debug(f"CameraControlPanel: is_recording set to {self.is_recording}")
-
-    def _setup_float_control(self, prop_id, spinbox, decimals=2, slider=None, to_ui=lambda x: x):
-        log.info(f"CameraControlPanel: Looking for property {prop_id}")
-
-        try:
-            prop = self.grabber.device_property_map.find_float(prop_id)
-            if not prop:
-                log.warning(f"CameraControlPanel: Property {prop_id} not found.")
-                return 1
-
-            min_val = to_ui(prop.minimum)
-            max_val = to_ui(prop.maximum)
-            cur_val = to_ui(prop.value)
-
-            # Try to use the property's increment if available; fall back to
-            # dividing the range into 100 steps which was the previous
-            # behaviour. Using the increment gives a much finer control for
-            # properties like ExposureTime that support very small steps.
-            step = 0.0
-            if hasattr(prop, "has_inc") and callable(getattr(prop, "has_inc")) and prop.has_inc():
-                try:
-                    step = to_ui(prop.get_inc())
-                except Exception:
-                    step = None
-            else:
-                try:
-                    step = to_ui(getattr(prop, "increment"))
-                except Exception:
-                    step = None
-            if not step or step <= 0.0:
-                step = (max_val - min_val) / 100.0
-
-            spinbox.setRange(min_val, max_val)
-            spinbox.setSingleStep(step)
-
-            if step < 1.0:
-                # Ensure enough decimal places to represent the step size but
-                # avoid artificially increasing the precision. The old formula
-                # added one extra decimal place which caused "0.01" steps to
-                # display three decimals.
-                decimals = max(decimals, int(-math.log10(step)))
-            spinbox.setDecimals(min(decimals, 6))
-
-            spinbox.setValue(cur_val)
-            spinbox.setEnabled(True)
-
-            scale = 1
-            if slider is not None:
-                digits = spinbox.decimals()
-                scale = 10**digits
-                slider.setRange(int(min_val * scale), int(max_val * scale))
-                slider.setSingleStep(max(1, int(step * scale)))
-                slider.setValue(int(cur_val * scale))
-                slider.setEnabled(True)
-
-            log.debug(
-                f"{prop_id}: min={min_val}, max={max_val}, step={step}, value={cur_val}, unit={prop.unit}"
-            )
-
-            return scale
-
-        except Exception as e:
-            log.warning(f"CameraControlPanel: Failed to setup {prop_id}: {e}")
-
-        return 1
-
-    def _on_grabber_ready(self):
-        log.info("CameraControlPanel: _on_grabber_ready() called")
-
-        if not self.grabber or not getattr(self.grabber, "is_device_open", False):
-            log.error(
-                "CameraControlPanel: _on_grabber_ready() called but grabber is not open."
-            )
-            return
-
-        self._exp_scale = self._setup_float_control(
-            "ExposureTime",
-            self.exposure_spin,
-            decimals=2,
-            slider=self.exposure_slider,
-            to_ui=lambda v: v / self._exp_unit_factor,
-        )
-        self._gain_scale = self._setup_float_control(
-            "Gain", self.gain_spin, decimals=2, slider=self.gain_slider
-        )
-
-        try:
-            ae_node = self.grabber.device_property_map.find_enumeration("ExposureAuto")
-            self.ae_checkbox.setChecked(ae_node.value == "Continuous")
-            self.ae_checkbox.setEnabled(True)
-        except Exception as e:
-            log.warning(f"CameraControlPanel: Failed to init ExposureAuto: {e}")
-
-        try:
-            ag_node = self.grabber.device_property_map.find_enumeration("GainAuto")
-            self.ag_checkbox.setChecked(ag_node.value == "Continuous")
-            self.ag_checkbox.setEnabled(True)
-        except Exception as e:
-            log.warning(f"CameraControlPanel: Failed to init GainAuto: {e}")
-
-        try:
-            # Use the generic helper so missing 'increment' does not disable the control
-            self._framerate_scale = self._setup_float_control(
-                "AcquisitionFrameRate",
-                self.framerate_spin,
-                decimals=1,
-                slider=self.framerate_slider,
-            )
-        except Exception as e:
-            log.warning(f"CameraControlPanel: Failed to init AcquisitionFrameRate: {e}")
-
-        try:
-            pf_node = self.grabber.device_property_map.find_enumeration("PixelFormat")
-            self.pf_combo.clear()
-            for entry in pf_node.entries:
-                self.pf_combo.addItem(entry.name)
-            current = pf_node.value
-            if current:
-                idx = self.pf_combo.findText(current)
-                if idx >= 0:
-                    self.pf_combo.setCurrentIndex(idx)
-            self.pf_combo.setEnabled(True)
-        except Exception as e:
-            log.warning(f"CameraControlPanel: Failed to init PixelFormat: {e}")
-
-    def _on_exposure_changed(self, new_val):
-        if self.is_recording:
-            log.warning("Blocked Exposure change during recording")
-            return
-        try:
-            node = self.grabber.device_property_map.find_float("ExposureTime")
-            node.value = float(new_val) * self._exp_unit_factor
-            log.debug(f"ExposureTime set to {node.value} µs")
-            self.exposure_slider.blockSignals(True)
-            self.exposure_slider.setValue(int(float(new_val) * self._exp_scale))
-            self.exposure_slider.blockSignals(False)
-        except Exception as e:
-            log.error(
-                f"CameraControlPanel: failed to set ExposureTime = {new_val}: {e}"
-            )
-
-    def _on_gain_changed(self, new_val):
-        if self.is_recording:
-            log.warning("Blocked Gain change during recording")
-            return
-        try:
-            node = self.grabber.device_property_map.find_float("Gain")
-            node.value = float(new_val)  # ✅ CORRECT
-            self.gain_slider.blockSignals(True)
-            self.gain_slider.setValue(int(float(new_val) * self._gain_scale))
-            self.gain_slider.blockSignals(False)
-        except Exception as e:
-            log.error(f"CameraControlPanel: failed to set Gain = {new_val}: {e}")
-
-    def _on_auto_exposure_toggled(self, state):
-        if self.is_recording:
-            log.warning("Blocked Auto Exposure toggle during recording")
-            return
-        manual_enabled = state != Qt.Checked
-        self.exposure_spin.setEnabled(manual_enabled)
-        self.exposure_slider.setEnabled(manual_enabled)
-        try:
-            node = self.grabber.device_property_map.find_enumeration("ExposureAuto")
-            node.value = "Continuous" if state == Qt.Checked else "Off"
-            self._refresh_auto_values()
-        except Exception as e:
-            log.error(f"CameraControlPanel: failed to set ExposureAuto: {e}")
-
-    def _on_auto_gain_toggled(self, state):
-        if self.is_recording:
-            log.warning("Blocked Auto Gain toggle during recording")
-            return
-        manual_enabled = state != Qt.Checked
-        self.gain_spin.setEnabled(manual_enabled)
-        self.gain_slider.setEnabled(manual_enabled)
-        try:
-            node = self.grabber.device_property_map.find_enumeration("GainAuto")
-            node.value = "Continuous" if state == Qt.Checked else "Off"
-            self._refresh_auto_values()
-        except Exception as e:
-            log.error(f"CameraControlPanel: failed to set GainAuto: {e}")
-
-    def _on_framerate_changed(self, new_val):
-        if self.is_recording:
-            log.warning("Blocked Frame Rate change during recording")
-            return
-        try:
-            node = self.grabber.device_property_map.find_float("AcquisitionFrameRate")
-            node.value = float(new_val)  # ✅ FIXED
-        except Exception as e:
-            log.error(
-                f"CameraControlPanel: failed to set AcquisitionFrameRate = {new_val}: {e}"
-            )
-
-    def _on_pf_changed(self, index):
-        if self.is_recording:
-            log.warning("Blocked Pixel Format change during recording")
-            return
-        try:
-            node = self.grabber.device_property_map.find_enumeration("PixelFormat")
-            new_pf = self.pf_combo.currentText()
-            if new_pf:
-                node.value = new_pf
-        except Exception as e:
-            log.error(
-                f"CameraControlPanel: failed to set PixelFormat = {self.pf_combo.currentText()}: {e}"
-            )
+        self.is_recording = bool(recording)
+        self._refresh_auto_values()
 
     def _refresh_auto_values(self):
-        if not self.grabber or not getattr(self.grabber, "is_device_open", False):
-            return
-        if self.ae_checkbox.isChecked():
-            try:
-                node = self.grabber.device_property_map.find_float("ExposureTime")
-                val_ms = node.value / self._exp_unit_factor
-                self.exposure_spin.blockSignals(True)
-                self.exposure_slider.blockSignals(True)
-                self.exposure_spin.setValue(val_ms)
-                self.exposure_slider.setValue(int(val_ms * self._exp_scale))
-                self.exposure_spin.blockSignals(False)
-                self.exposure_slider.blockSignals(False)
-            except Exception as e:
-                log.debug(f"CameraControlPanel: refresh auto exposure failed: {e}")
-        if self.ag_checkbox.isChecked():
-            try:
-                node = self.grabber.device_property_map.find_float("Gain")
-                val = node.value
-                self.gain_spin.blockSignals(True)
-                self.gain_slider.blockSignals(True)
-                self.gain_spin.setValue(val)
-                self.gain_slider.setValue(int(val * self._gain_scale))
-                self.gain_spin.blockSignals(False)
-                self.gain_slider.blockSignals(False)
-            except Exception as e:
-                log.debug(f"CameraControlPanel: refresh auto gain failed: {e}")
+        capabilities = self.controller.capabilities() if self.controller else {}
+        self.properties_button.setVisible(any(key.startswith(("mm:", "mmcore:")) for key in capabilities))
+        self.properties_button.setEnabled(not self.is_recording)
+        self._control_error = self.controller.last_error if self.controller else ""
+        self.control_message.setToolTip(self._control_error)
+        self.control_message.setAccessibleDescription(self._control_error)
+        self.control_message.setVisible(bool(self._control_error))
+        issues = self.controller.diagnostics().get("control_issues", {}) if self.controller else {}
+        rows = (
+            ("exposure", self.exposure_spin, self.exposure_slider, "_exp_scale", 1000.0, "auto_exposure"),
+            ("gain", self.gain_spin, self.gain_slider, "_gain_scale", 1.0, "auto_gain"),
+            ("fps", self.framerate_spin, self.framerate_slider, "_framerate_scale", 1.0, None),
+        )
+        for name, spin, slider, scale_name, factor, auto_name in rows:
+            prop = capabilities.get(name)
+            auto = capabilities.get(auto_name)
+            unbounded = bool(prop and not prop.limits_known)
+            self._unit_labels[spin].setText("ms" if name == "exposure" else
+                (prop.unit if prop and prop.unit else "dB" if name == "gain" else "fps"))
+            enabled = bool(prop and prop.writable and not self.is_recording
+                           and not (auto and auto.value != "Off"))
+            spin.setEnabled(enabled)
+            slider.setEnabled(enabled and not unbounded)
+            tooltip = ("Type a value or use the arrows. Press Enter to apply typed changes. "
+                       "The camera checks which values it accepts.") if unbounded else (
+                issues.get(name, "Not exposed by this camera connection.") if prop is None else "")
+            slider.setToolTip("The camera does not report a slider range. Use the number field instead."
+                              if unbounded else tooltip)
+            spin.setToolTip(tooltip)
+            spin.setProperty("compactNumericText", unbounded)
+            spin.setKeyboardTracking(not unbounded)
+            spin.setMaximumWidth(110 if unbounded else 16777215)
+            if unbounded:
+                # Leave incomplete typing alone; arrow/committed edits can show
+                # the worker's readback even while the control retains focus.
+                if spin.hasFocus() and spin.lineEdit().isModified():
+                    continue
+                value = float(prop.value) / factor
+                if not math.isfinite(value):
+                    spin.setEnabled(False)
+                    continue
+                blocker = QSignalBlocker(spin)
+                integer = prop.value_type == "int" and factor == 1
+                spin.setDecimals(0 if integer else 6)
+                # These are storage limits for the editor, not camera limits.
+                # The adapter remains responsible for accepting/rejecting values.
+                spin.setRange(-sys.float_info.max, sys.float_info.max)
+                step = prop.increment / factor
+                spin.setSingleStep(step if math.isfinite(step) and step > 0 else 1 if integer else 0.1)
+                spin.setValue(value)
+                del blocker
+                continue
+            if prop is None or spin.hasFocus() or slider.isSliderDown():
+                continue
+            lo, hi, value = prop.minimum / factor, prop.maximum / factor, float(prop.value) / factor
+            if not all(math.isfinite(v) for v in (lo, hi, value)) or hi < lo:
+                spin.setEnabled(False)
+                slider.setEnabled(False)
+                continue
+            step = prop.increment / factor or max((hi - lo) / 100, 0.001)
+            blockers = [QSignalBlocker(spin), QSignalBlocker(slider)]
+            decimals = 1 if name == "fps" else 2
+            if 0 < step < 1:
+                decimals = min(6, max(decimals, math.ceil(-math.log10(step))))
+            spin.setDecimals(decimals)
+            # QSlider uses signed 32-bit integers even for cameras with huge ranges.
+            scale = min(10 ** spin.decimals(), (2**30) / max(abs(lo), abs(hi), 1))
+            setattr(self, scale_name, scale)
+            spin.setRange(lo, hi)
+            spin.setSingleStep(step)
+            spin.setValue(value)
+            slider.setRange(int(lo * scale), int(hi * scale))
+            slider.setSingleStep(max(1, int(step * scale)))
+            slider.setValue(int(value * scale))
+            del blockers
+        for name, checkbox in (("auto_exposure", self.ae_checkbox), ("auto_gain", self.ag_checkbox)):
+            prop = capabilities.get(name)
+            blocker = QSignalBlocker(checkbox)
+            checkbox.setChecked(bool(prop and prop.value != "Off"))
+            checkbox.setEnabled(bool(prop and prop.writable and not self.is_recording
+                                     and {"Off", "Continuous"}.issubset(prop.choices)))
+            checkbox.setToolTip(issues.get(name, "Not exposed by this camera connection.") if prop is None else "")
+            del blocker
+        prop = capabilities.get("pixel_format")
+        blocker = QSignalBlocker(self.pf_combo)
+        choices = list(prop.choices) if prop else []
+        if prop and str(prop.value) not in choices:
+            choices.insert(0, str(prop.value))
+        if choices != [self.pf_combo.itemText(i) for i in range(self.pf_combo.count())]:
+            self.pf_combo.clear()
+            self.pf_combo.addItems(choices)
+        if prop:
+            self.pf_combo.setCurrentText(str(prop.value))
+        self.pf_combo.setEnabled(bool(prop and prop.writable and not self.is_recording))
+        self.pf_combo.setToolTip(issues.get("pixel_format", "Not exposed by this camera connection.") if prop is None else "")
+        del blocker
+
+    def _show_control_error(self):
+        if self._control_error:
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("Camera setting")
+            dialog.setIcon(QMessageBox.Warning)
+            dialog.setText("The camera could not apply a setting.")
+            dialog.setInformativeText("The controls show the values reported by the camera.")
+            dialog.setDetailedText(self._control_error)
+            dialog.exec_()
+
+    def _show_properties(self):
+        if self.controller is not None and not self.is_recording:
+            from ui.camera_properties_dialog import CameraPropertiesDialog
+            CameraPropertiesDialog(self).exec_()
+
+    def _set_value(self, name, value):
+        if self.controller is not None and not self.is_recording:
+            self.controller.set_value(name, value)
+            self.camera_settings_changed.emit()
+
+    def _on_exposure_changed(self, value):
+        self._set_value("exposure", float(value) * self._exp_unit_factor)
+
+    def _on_gain_changed(self, value):
+        self._set_value("gain", float(value))
+
+    def _on_framerate_changed(self, value):
+        self._set_value("fps", float(value))
+
+    def _on_auto_exposure_toggled(self, state):
+        self._set_value("auto_exposure", "Continuous" if state == Qt.Checked else "Off")
+
+    def _on_auto_gain_toggled(self, state):
+        self._set_value("auto_gain", "Continuous" if state == Qt.Checked else "Off")
+
+    def _on_pf_changed(self, index):
+        if index >= 0:
+            self._set_value("pixel_format", self.pf_combo.currentText())

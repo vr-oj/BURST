@@ -1,13 +1,15 @@
 import os
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from pathlib import Path
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PyQt5.QtWidgets import QApplication, QComboBox, QLabel
+    from PyQt5.QtWidgets import QApplication, QComboBox, QLabel, QPushButton
 
     app_path = str(Path(__file__).parents[1] / "buti_app")
     sys.path.insert(0, app_path)
@@ -36,6 +38,29 @@ except ImportError:
 
 @unittest.skipIf(QApplication is None, "PyQt5 UI dependencies are unavailable")
 class MainCardUiTests(unittest.TestCase):
+    def test_unsupported_box_commands_are_not_sent(self):
+        serial = Mock()
+        serial.isRunning.return_value = True
+        serial.send_command.return_value = True
+        window = SimpleNamespace(_serial_thread=serial)
+        for command in ("H", "R", "Z"):
+            self.assertFalse(MainWindow._send_serial_command(window, command))
+        serial.send_command.assert_not_called()
+        self.assertTrue(MainWindow._send_serial_command(window, "G"))
+        serial.send_command.assert_called_once_with("G")
+
+    def test_box_controls_expose_status_without_unsupported_commands(self):
+        panel = TopControlPanel()
+        panel.update_connection_status("Connected", True)
+        labels = [button.text() for button in panel.findChildren(QPushButton)]
+        self.assertNotIn("Home", labels)
+        self.assertNotIn("Step", labels)
+        self.assertEqual(panel.reset_btn.text(), "Box status…")
+        self.assertTrue(panel.reset_btn.isEnabled())
+        self.assertEqual(panel.start_btn.text(), "Run without recording")
+        self.assertEqual(panel.start_btn.property("cssClass"), "ghost")
+        panel.close()
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -165,6 +190,11 @@ class MainCardUiTests(unittest.TestCase):
         panel.record_btn.click()
         self.assertEqual(requests, ["record"])
 
+        panel.set_recording_state("preparing", True)
+        self.assertEqual(panel.record_btn.text(), "Preparing…\nCancel")
+        panel.record_btn.click()
+        self.assertEqual(requests, ["record", "record"])
+
         panel.set_recording_state("recording", True)
         self.assertIn("Stop Recording", panel.record_btn.text())
         self.assertEqual(panel.record_btn.property("recordState"), "recording")
@@ -172,6 +202,12 @@ class MainCardUiTests(unittest.TestCase):
         panel.set_recording_state("finalizing", False)
         self.assertIn("Finalizing", panel.record_btn.text())
         self.assertFalse(panel.record_btn.isEnabled())
+
+        panel.set_recording_state("idle", False, "Connect Arduino")
+        self.assertEqual(panel.record_btn.text(), "●  Start Recording\nConnect Arduino")
+        self.assertIn("Connect Arduino", panel.record_btn.toolTip())
+        panel.record_btn.click()
+        self.assertEqual(requests, ["record", "record"])
         panel.close()
 
     def test_recording_completion_uses_one_combined_prompt(self):

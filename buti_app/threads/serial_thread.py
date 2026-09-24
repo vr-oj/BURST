@@ -12,6 +12,7 @@ import queue
 import utils.config as config
 from utils.buti_metadata import ButiMetadataParser
 from utils.serial_activity import SerialActivityTracker
+from utils.buti_protocol import SUPPORTED_COMMANDS
 
 log = logging.getLogger(__name__)
 
@@ -180,11 +181,17 @@ class SerialThread(QThread):
 
                             try:
                                 time_s = float(parts[0])
-                                frame_idx_device = int(float(parts[1]))
+                                frame_value = float(parts[1])
+                                cycle_value = float(parts[3])
+                                frame_idx_device = int(frame_value)
                                 distance = float(parts[2])
                                 cycle_idx = int(float(parts[3]))
                                 force = float(parts[4])
-                            except ValueError:
+                                if (not all(math.isfinite(v) for v in (time_s, distance, force, frame_value, cycle_value))
+                                        or time_s < 0 or frame_value < 0 or not frame_value.is_integer()
+                                        or not cycle_value.is_integer()):
+                                    raise ValueError("Invalid numeric sample")
+                            except (ValueError, OverflowError):
                                 log.debug(
                                     "Ignoring non-numeric CSV line: %s",
                                     line,
@@ -267,6 +274,9 @@ class SerialThread(QThread):
         """
         Queue a command (ASCII + newline) for the BUTI Arduino Box. GUI can call this safely.
         """
+        if command_str not in SUPPORTED_COMMANDS:
+            self.error_occurred.emit("This action is not supported remotely by the published BUTI firmware. Use the box controls.")
+            return False
         if self.running:
             try:
                 cmd_bytes = command_str.encode("ascii")
@@ -289,9 +299,11 @@ class SerialThread(QThread):
             final_command = cmd_bytes + bytes(terminator)
             self.command_queue.put(final_command)
             log.info(f"Queued command: {command_str}")
+            return True
         else:
             log.warning("Serial thread not running â†’ cannot send command.")
             self.error_occurred.emit("Cannot send: Serial disconnected.")
+            return False
 
     def stop(self):
         """

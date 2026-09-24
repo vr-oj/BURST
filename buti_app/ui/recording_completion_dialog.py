@@ -26,6 +26,7 @@ class RecordingCompletionDialog(QDialog):
         run_folder_name: str,
         *,
         summary=None,
+        has_images=True,
         braid_application: str | None = None,
         braid_icon_path: str | None = None,
         parent=None,
@@ -53,16 +54,26 @@ class RecordingCompletionDialog(QDialog):
             (
                 f"Readable CSV and TIFF data were preserved in {run_folder_name}."
                 if recovered
-                else f"The synchronized CSV and TIFF were saved in {run_folder_name}."
+                else f"The CSV and TIFF were saved in {run_folder_name}."
             )
         )
+        if not has_images:
+            details.setText(f"Force data were saved as CSV in {run_folder_name}. No images were saved.")
         details.setWordWrap(True)
         layout.addWidget(details)
 
         if summary is not None:
             layout.addWidget(self._build_integrity_card(summary))
+            if summary.timing_mode == "external_trigger":
+                note = QLabel("Arduino-triggered capture. Image/data checks are reported above; physical exposure timing is not measured by BURST.")
+                note.setWordWrap(True)
+                layout.addWidget(note)
+            elif summary.capture_mode == "box":
+                note = QLabel("Approximate software pairing: image exposure times may differ from the associated force measurements.")
+                note.setWordWrap(True)
+                layout.addWidget(note)
 
-        name_label = QLabel("Recording name for both files:")
+        name_label = QLabel("Recording name:")
         layout.addWidget(name_label)
 
         self.name_edit = QLineEdit(current_name)
@@ -116,9 +127,8 @@ class RecordingCompletionDialog(QDialog):
             "integrityPassed" if summary.checks_passed else "integrityWarning",
         )
         status.setToolTip(
-            "BURST verifies that both files closed successfully, compares force "
-            "sample and video-frame counts, checks device-frame continuity, and "
-            "confirms no paired samples remain pending."
+            "BURST checks saved images against requested captures. Intentionally skipped "
+            "images are allowed. These checks do not verify exposure timing."
         )
         card_layout.addWidget(status)
 
@@ -134,7 +144,7 @@ class RecordingCompletionDialog(QDialog):
             (
                 "Force samples",
                 f"{summary.samples_written:,}",
-                "Synchronized device rows successfully written into the CSV file.",
+                "All device samples successfully written into the CSV file.",
             ),
             (
                 "Duration",

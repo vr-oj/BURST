@@ -1,6 +1,5 @@
 ﻿# BURST-QTAPP/buti_app/utils/utils.py
 import time
-import cv2
 import serial.tools.list_ports
 import re
 
@@ -14,19 +13,6 @@ def timestamped_filename(prefix, ext):
     """Generates a timestamped filename."""
     ts = time.strftime("%Y%m%d-%H%M%S")
     return f"{prefix}_{ts}.{ext}"
-
-
-def list_cameras(max_idx=5):  # OpenCV camera listing
-    """Lists available OpenCV/DirectShow cameras."""
-    cams = []
-    for i in range(max_idx):
-        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                cams.append(i)
-            cap.release()
-    return cams
 
 
 # --- ADDED FUNCTION ---

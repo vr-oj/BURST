@@ -41,7 +41,8 @@ class WelcomeDialog(QDialog):
 
         self.setWindowTitle("Welcome to BURST")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.setMinimumSize(500, 420)
+        self.setMinimumSize(640, 520)
+        self.resize(700, 540)
         self.setStyleSheet(
             """
             QDialog { background-color: #2b2b2b; color: white; border-radius: 10px; }
@@ -59,14 +60,15 @@ class WelcomeDialog(QDialog):
             "BURST (BUTI Uniaxial Recording of Strain &amp; Tension) pairs the BUTI Arduino Box with your camera to record synchronized <b>force-vs-time data and video</b> for your experiments.<br>"
             "Follow these steps to get started quickly:"
         )
+        intro.setWordWrap(True)
         main_layout.addWidget(intro)
 
         steps = [
             ("plug.svg", "Connect BUTI Arduino Box", "Select the BUTI Arduino Box COM port and click Connect"),
             ("camera.svg", "Set Up Camera", "Choose camera & resolution then click Start Camera"),
             ("settings.svg", "Adjust Exposure/Gain", "Use controls to fine-tune camera settings"),
-            ("sync.svg", "Zero BURST", "Make sure force is zero"),
-            ("record.svg", "Start Recording", "Click Start Recording to begin acquisition"),
+            ("sync.svg", "ZERO on the Arduino Box", "Use ZERO on the box before each recording"),
+            ("record.svg", "Start Recording", "Click Start Recording. BURST prepares the recording and automatically starts the Arduino"),
             (
                 "stop.svg",
                 "Finish Recording",
@@ -85,6 +87,7 @@ class WelcomeDialog(QDialog):
         for i, (icon, title, desc) in enumerate(steps, start=1):
             step_widget = QWidget()
             step_layout = QVBoxLayout(step_widget)
+            step_layout.setContentsMargins(0, 4, 0, 4)
             step_layout.setSpacing(4)
             step_layout.setAlignment(Qt.AlignTop)
 
@@ -101,6 +104,7 @@ class WelcomeDialog(QDialog):
             icon_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
             title_lbl = QLabel(f"{i}. {title}")
+            title_lbl.setWordWrap(True)
             title_lbl.setStyleSheet("font-size: 11pt; font-weight: bold;")
             title_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
@@ -121,7 +125,9 @@ class WelcomeDialog(QDialog):
             grid.addWidget(step_widget, row, col)
 
         main_layout.addLayout(grid)
-
+        manual_note = QLabel("Run without recording operates the Arduino without saving any files.")
+        manual_note.setWordWrap(True)
+        main_layout.addWidget(manual_note)
 
         self.checkbox = QCheckBox("Don't show this again")
         self.checkbox.stateChanged.connect(self._toggle_show)
