@@ -157,6 +157,9 @@ class RecordingWorkflowTests(unittest.TestCase):
         self.assertEqual(camera.hardware_trigger_source, "")
         window._on_start_recording()
         self.assertEqual(window._timing_transition, "arming")
+        self.assertEqual(window.top_ctrl.record_btn.text(), "Preparing…\nCancel")
+        self.assertEqual(window.recording_action.text(), "Cancel Preparation")
+        self.assertFalse(window.top_ctrl.start_btn.isEnabled())
         window._start_recording_files.assert_not_called()
         camera.allow_arm.set()
         self.wait_for(lambda: window._start_recording_files.called)
@@ -168,6 +171,7 @@ class RecordingWorkflowTests(unittest.TestCase):
         window._current_run_folder = "test"
         window._on_recorder_ready()
         window._send_serial_command.assert_called_once_with("G")
+        self.assertIn("Stop Recording", window.top_ctrl.record_btn.text())
         window._recording_state = "idle"
         window._device_run_active = False
         window._restore_camera_preview()
@@ -175,6 +179,7 @@ class RecordingWorkflowTests(unittest.TestCase):
         self.assertEqual(camera.switches, [AUTO_TRIGGER, ""])
         self.assertFalse(window._camera_armed)
         self.assertTrue(window.camera_control_panel.isEnabled())
+        self.assertIn("Start Recording", window.top_ctrl.record_btn.text())
 
     def test_failed_arm_does_not_create_files_start_box_or_enable_approximate_mode(self):
         window = self.window()
@@ -193,10 +198,12 @@ class RecordingWorkflowTests(unittest.TestCase):
 
     def test_cancel_during_arming_ignores_late_ready(self):
         window = self.window()
+        window._send_serial_command = Mock()
         window._on_start_recording()
-        window._request_recording_stop(send_device_stop=True, reason="test cancellation")
+        window.top_ctrl.record_btn.click()
         self.wait_for(lambda: window.camera_thread is None)
         window._start_recording_files.assert_not_called()
+        window._send_serial_command.assert_not_called()
         self.assertEqual(window._recording_state, "idle")
 
     def test_unsupported_backend_can_preview_but_requires_explicit_approximate_choice(self):

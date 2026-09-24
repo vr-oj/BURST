@@ -7,10 +7,12 @@ from utils.buti_protocol import PROTOCOL_NOTE, RATE_SETUP
 class BoxStatusDialog(QDialog):
     def __init__(self, window):
         super().__init__(window)
-        self.setWindowTitle("Arduino box settings and status")
+        self.setWindowTitle("Arduino box status")
         self.resize(640, 520)
         layout = QVBoxLayout(self)
-        note = QLabel(PROTOCOL_NOTE + "\n\n" + RATE_SETUP)
+        note = QLabel("Use Home and ZERO on the Arduino box. Remote Home is not supported; "
+            "remote Step is unavailable pending firmware timing and counter fixes.\n\n"
+            + PROTOCOL_NOTE + "\n\n" + RATE_SETUP)
         note.setWordWrap(True)
         layout.addWidget(note)
         self.status = QLabel()

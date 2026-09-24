@@ -308,11 +308,9 @@ class MainWindow(QMainWindow):
 
         # ─── Global BUTI status strip ─────────────────────────────────────
         self.top_ctrl = TopControlPanel(self)
-        self.top_ctrl.zero_requested.connect(self._on_zero_burst)
         self.top_ctrl.start_requested.connect(self._on_start_pump)
         self.top_ctrl.stop_requested.connect(self._on_stop_pump)
         self.top_ctrl.reset_requested.connect(self._on_reset_burst)
-        self.top_ctrl.step_requested.connect(self._on_step)
         self.top_ctrl.record_requested.connect(self._toggle_recording)
         main_vlay.addWidget(self.top_ctrl, stretch=0)
 
@@ -535,6 +533,7 @@ class MainWindow(QMainWindow):
             if self.resolution_combo.count() > 1:
                 self.resolution_combo.setCurrentIndex(1)
         self._fit_combo_popup(self.resolution_combo)
+        self._refresh_recording_button_states()
 
     @pyqtSlot(int)
     def _on_camera_device_activated(self, index):
@@ -948,7 +947,7 @@ class MainWindow(QMainWindow):
         self.timing_action = QAction("Allow approximate software pairing", self, checkable=True)
         self.timing_action.triggered.connect(self._configure_timing)
         advanced.addAction(self.timing_action)
-        advanced.addAction("Arduino box settings and status…", self._show_box_settings)
+        advanced.addAction("Arduino box status…", self._show_box_settings)
         capture_menu = advanced.addMenu("BURST recording mode")
         self.capture_mode_group = QActionGroup(self)
         self.capture_mode_group.setExclusive(True)
@@ -1173,10 +1172,6 @@ class MainWindow(QMainWindow):
         return False
 
     @pyqtSlot()
-    def _on_zero_burst(self):
-        QMessageBox.information(self, "Use the box controls", "Use Home on the Arduino box. The published firmware has no remote Home command.")
-
-    @pyqtSlot()
     def _on_start_pump(self):
         """Send the firmware start command without recording."""
         if self._recording_state != "idle" or self._device_run_active or self._timing_transition:
@@ -1184,7 +1179,7 @@ class MainWindow(QMainWindow):
             return
         if self._send_serial_command(SERIAL_CMD_START):
             self.statusBar().showMessage(
-                "Run Device command sent; no recording files will be saved.", 4000
+                "Running without recording; no files will be saved.", 4000
             )
             self._serial_start_sent = True
             self._device_run_active = True
@@ -1211,14 +1206,11 @@ class MainWindow(QMainWindow):
             self._request_recording_stop(
                 send_device_stop=False, reason="Stop Device command"
             )
+        self._refresh_recording_button_states()
 
     @pyqtSlot()
     def _on_reset_burst(self):
         self._show_box_settings()
-
-    @pyqtSlot()
-    def _on_step(self):
-        QMessageBox.information(self, "Step unavailable", "Remote Step is disabled pending corrections to timestamps and trigger counts in the Arduino firmware.")
 
     def _set_initial_control_states(self):
         if hasattr(self, "camera_control_panel"):
@@ -2280,10 +2272,10 @@ class MainWindow(QMainWindow):
         camera_ready = self.camera_thread is not None and self.camera_thread.isRunning()
         if self._recording_state in {"preparing", "recording"}:
             self.recording_action.setIcon(self.icon_record_stop)
-            self.recording_action.setText("Stop R&ecording")
+            self.recording_action.setText("Cancel Preparation" if self._recording_state == "preparing" else "Stop R&ecording")
             self.recording_action.setShortcut(Qt.CTRL | Qt.Key_T)
             self.recording_action.setEnabled(True)
-            self.top_ctrl.set_recording_state("recording", True)
+            self.top_ctrl.set_recording_state(self._recording_state, True)
         elif self._recording_state == "finalizing":
             self.recording_action.setIcon(self.icon_record_stop)
             self.recording_action.setText("Finalizing Recording…")
@@ -2294,8 +2286,25 @@ class MainWindow(QMainWindow):
             self.recording_action.setText("Start &Recording")
             self.recording_action.setShortcut(Qt.CTRL | Qt.Key_R)
             can_start = serial_ready and (camera_ready or self._recording_capture_mode == "force_only") and not self._device_run_active and not self._timing_transition
+            reason = ""
+            if not can_start:
+                if self._timing_transition:
+                    reason = "Restoring preview…" if self._timing_transition == "preview" else "Preparing camera…"
+                elif self._device_run_active:
+                    reason = "Stop manual run first"
+                elif not serial_ready:
+                    reason = "Connect Arduino"
+                elif self.device_combo.currentData() is None:
+                    reason = "Choose a camera"
+                else:
+                    reason = "Start the camera"
             self.recording_action.setEnabled(can_start)
-            self.top_ctrl.set_recording_state("idle", can_start)
+            self.top_ctrl.set_recording_state("idle", can_start, reason)
+        self.recording_action.setToolTip(self.top_ctrl.record_btn.toolTip())
+        # Match the existing manual-run guard instead of leaving a button that
+        # appears available while preparation/recording would ignore its click.
+        self.top_ctrl.start_btn.setEnabled(bool(serial_ready and self._recording_state == "idle"
+                                               and not self._device_run_active and not self._timing_transition))
         if hasattr(self, "change_session_action"):
             self.change_session_action.setEnabled(self._recording_state == "idle" and not self._timing_transition)
         self.timing_action.setEnabled(self._recording_state == "idle" and not self._timing_transition)

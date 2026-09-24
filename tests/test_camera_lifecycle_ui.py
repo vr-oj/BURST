@@ -57,6 +57,58 @@ class CameraLifecycleUiTests(unittest.TestCase):
             QThread.msleep(5)
         self.assertTrue(predicate())
 
+    def test_recording_guidance_follows_connections_and_manual_run(self):
+        registry = Mock()
+        registry.discover_cameras.return_value = [CameraDeviceInfo("test", "1", "Test camera")]
+        registry.list_modes.return_value = [CameraMode(4, 2, "Mono8")]
+        registry.get_thread.side_effect = lambda device, parent=None: CameraThread(parent)
+        with patch.object(main_window, "CameraRegistry", return_value=registry):
+            window = main_window.MainWindow()
+        serial = Mock()
+        serial.isRunning.return_value = True
+        serial.send_command.return_value = True
+        button = window.top_ctrl.record_btn
+        try:
+            self.assertIn("Connect Arduino", button.text())
+            window.device_combo.setCurrentIndex(0)
+            window._serial_thread = serial
+            window._refresh_recording_button_states()
+            self.assertIn("Choose a camera", button.text())
+            window.device_combo.setCurrentIndex(1)
+            self.assertIn("Start the camera", button.text())
+            window._on_start_stop_camera()
+            self.wait_for(lambda: window._last_camera_frame_monotonic is not None)
+            self.assertTrue(button.isEnabled())
+            serial.send_command.assert_not_called()
+
+            window.top_ctrl.start_btn.click()
+            self.assertFalse(button.isEnabled())
+            self.assertIn("Stop manual run first", button.text())
+            self.assertTrue(window.top_ctrl.stop_btn.isEnabled())
+            window.top_ctrl.stop_btn.click()
+            self.assertTrue(button.isEnabled())
+            self.assertEqual([call.args[0] for call in serial.send_command.call_args_list], ["G", "S"])
+
+            window._timing_transition = "preview"
+            window._refresh_recording_button_states()
+            self.assertIn("Restoring preview", button.text())
+            self.assertFalse(window.top_ctrl.start_btn.isEnabled())
+            window._timing_transition = ""
+            window._on_start_stop_camera()
+            self.wait_for(lambda: window.camera_thread is None)
+            self.assertIn("Start the camera", button.text())
+            window.device_combo.setCurrentIndex(0)
+            window._set_capture_mode("force_only")
+            self.assertTrue(button.isEnabled())
+            self.assertEqual(button.text(), "●  Start Recording")
+            self.assertEqual(serial.send_command.call_count, 2)
+        finally:
+            window._serial_thread = None
+            window._timing_transition = ""
+            window._device_run_active = False
+            window.close()
+            self.app.processEvents()
+
     def test_mixed_selector_routes_modes_and_preserves_thread_until_finished(self):
         devices = [CameraDeviceInfo("ic4", "1", "DMK — IC4"),
                    CameraDeviceInfo("micromanager", "2", "Camera — Micro-Manager")]

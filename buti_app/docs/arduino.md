@@ -7,12 +7,15 @@ its menu behavior must not be assumed to describe newer installed firmware.
 
 ## What can be controlled remotely
 
-- **Run Device / Start Recording** sends `G`. **Stop Device / Stop Recording** sends `S`.
-- **Box settings…** shows the last received experiment header and observed cadence.
-- Remote **Home** is disabled: published v5 firmware has no `H` handler.
-- The former **Reset** button is replaced by Box settings. `R` starts execution and
+- **Run without recording / Start Recording** sends `G`. **Stop Device / Stop Recording** sends `S`.
+  Start Recording prepares the camera and files before starting the box;
+  Run without recording saves no files.
+- **Box status…** shows the last received experiment header and observed cadence.
+- Remote **Home** is unavailable: published v5 firmware has no `H` handler. Use Home on the box.
+- The former **Reset** button is replaced by Box status. `R` starts execution and
   resets the time origin; it is not the onboard Zero action and is not sent.
-- **Step** is disabled pending firmware fixes to its timestamps and trigger counter.
+- Remote **Step** is unavailable pending firmware fixes to its timestamps and trigger counter.
+  Unsupported Home and Step controls are not shown on the main panel.
 
 The firmware has no settings-query/set protocol, no firmware-version report and no
 command acknowledgement. BURST cannot implement automatic bidirectional menu

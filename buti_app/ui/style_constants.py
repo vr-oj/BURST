@@ -119,7 +119,7 @@ QPushButton[cssClass="record"][recordState="recording"] {
 
 QPushButton[cssClass="record"]:disabled {
     background-color: rgba(217, 79, 87, 0.18);
-    color: rgba(255, 255, 255, 0.38);
+    color: rgba(255, 255, 255, 0.75);
     border-color: rgba(255, 255, 255, 0.10);
 }
 

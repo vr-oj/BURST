@@ -16,6 +16,12 @@ See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supp
 7. **Finish Recording** – BURST stops automatically when device data ends, plays the selected completion cue, and shows one window with recording-integrity details, paired-file naming, folder access, and an optional **Open in BRAID** action when BRAID is installed.
 8. **Playback & Export** – Open **Playback** and select the TIFF; BURST finds its paired CSV automatically so you can review the stack, overlay force data, and export frames.
 
+**Run without recording** operates the Arduino without saving files. For a saved
+experiment, use **Start Recording**; it starts the Arduino automatically after
+preparation. The same button offers **Cancel** while preparing, and shows the next
+step when recording is unavailable. **Box status…** displays the last settings
+reported by the Arduino; change experiment settings on the box itself.
+
 ---
 ## Features
 

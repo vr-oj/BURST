@@ -29,11 +29,9 @@ class TopControlPanel(QWidget):
     """BUTI Arduino Box status panel."""
 
     parameter_changed = pyqtSignal(str, object)
-    zero_requested = pyqtSignal()
     start_requested = pyqtSignal()
     stop_requested = pyqtSignal()
     reset_requested = pyqtSignal()
-    step_requested = pyqtSignal()
     record_requested = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -108,7 +106,6 @@ class TopControlPanel(QWidget):
         self.record_btn.setProperty("recordState", "idle")
         self.record_btn.setMinimumWidth(170)
         self.record_btn.setMinimumHeight(58)
-        self.record_btn.setToolTip("Start synchronized camera and BUTI recording (Ctrl+R)")
         self.record_btn.clicked.connect(self.record_requested.emit)
         content_row.addWidget(self.record_btn, 1)
 
@@ -118,10 +115,10 @@ class TopControlPanel(QWidget):
         command_grid.setVerticalSpacing(6)
         content_row.addLayout(command_grid, 2)
 
-        self.start_btn = QPushButton("Run Device")
+        self.start_btn = QPushButton("Run without recording")
         self.start_btn.setEnabled(False)
         self.start_btn.setToolTip("Run the BUTI device without saving recording files")
-        self.start_btn.setProperty("cssClass", "primary")
+        self.start_btn.setProperty("cssClass", "ghost")
         self.start_btn.clicked.connect(self.start_requested.emit)
         command_grid.addWidget(self.start_btn, 0, 0)
 
@@ -130,29 +127,17 @@ class TopControlPanel(QWidget):
         self.stop_btn.setToolTip("Stop the current BUTI device run")
         self.stop_btn.setProperty("cssClass", "primary")
         self.stop_btn.clicked.connect(self.stop_requested.emit)
-        command_grid.addWidget(self.stop_btn, 0, 1, 1, 2)
+        command_grid.addWidget(self.stop_btn, 0, 1)
 
-        self.zero_btn = QPushButton("Home")
-        self.zero_btn.setEnabled(False)
-        self.zero_btn.setProperty("cssClass", "ghost")
-        self.zero_btn.clicked.connect(self.zero_requested.emit)
-        command_grid.addWidget(self.zero_btn, 1, 0)
-
-        self.reset_btn = QPushButton("Box settings…")
+        self.reset_btn = QPushButton("Box status…")
         self.reset_btn.setEnabled(False)
         self.reset_btn.setProperty("cssClass", "ghost")
+        self.reset_btn.setToolTip("View the last settings reported by the Arduino and its observed capture rate")
         self.reset_btn.clicked.connect(self.reset_requested.emit)
-        command_grid.addWidget(self.reset_btn, 1, 1)
-
-        self.step_btn = QPushButton("Step")
-        self.step_btn.setEnabled(False)
-        self.step_btn.setProperty("cssClass", "ghost")
-        self.step_btn.clicked.connect(self.step_requested.emit)
-        command_grid.addWidget(self.step_btn, 1, 2)
+        command_grid.addWidget(self.reset_btn, 1, 0, 1, 2)
 
         command_grid.setColumnStretch(0, 1)
         command_grid.setColumnStretch(1, 1)
-        command_grid.setColumnStretch(2, 1)
 
         self.details_widget = QWidget()
         details_layout = QVBoxLayout(self.details_widget)
@@ -197,22 +182,28 @@ class TopControlPanel(QWidget):
         self.details_toggle.blockSignals(False)
         self.details_toggle.setText("Hide Details ▴" if expanded else "Details ▾")
 
-    def set_recording_state(self, state: str, enabled: bool) -> None:
+    def set_recording_state(self, state: str, enabled: bool, unavailable_reason: str = "") -> None:
         """Keep the prominent acquisition button synchronized with app state."""
 
-        state = state if state in {"idle", "recording", "finalizing"} else "idle"
+        state = state if state in {"idle", "preparing", "recording", "finalizing"} else "idle"
         text = {
             "idle": "●  Start Recording",
+            "preparing": "Preparing…\nCancel",
             "recording": "■  Stop Recording",
             "finalizing": "Finalizing Recording…",
         }[state]
         tooltip = {
-            "idle": "Start synchronized camera and BUTI recording (Ctrl+R)",
+            "idle": "Prepare recording files and start the Arduino automatically (Ctrl+R).",
+            "preparing": "Preparing the camera and recording files. Click to cancel preparation (Ctrl+T).",
             "recording": "Stop and finalize the current recording (Ctrl+T)",
             "finalizing": "BURST is closing the synchronized recording files",
         }[state]
+        if state == "idle" and not enabled and unavailable_reason:
+            text += "\n" + unavailable_reason
+            tooltip = unavailable_reason + "\n" + tooltip
         self.record_btn.setText(text)
         self.record_btn.setToolTip(tooltip)
+        self.record_btn.setAccessibleDescription(tooltip)
         self.record_btn.setEnabled(bool(enabled))
         self.record_btn.setProperty("recordState", state)
         self.record_btn.style().unpolish(self.record_btn)
@@ -348,10 +339,6 @@ class TopControlPanel(QWidget):
 
         self.set_run_state(False, connected=connected)
         self.reset_btn.setEnabled(True)
-        self.zero_btn.setEnabled(False)
-        self.zero_btn.setToolTip("Use Home on the Arduino box. Published BUTI firmware has no remote Home command.")
-        self.step_btn.setEnabled(False)
-        self.step_btn.setToolTip("Remote Step is unavailable until the Arduino Step timing/counter issues are corrected.")
 
     def set_run_state(self, running: bool, *, connected: bool = True) -> None:
         self.start_btn.setEnabled(bool(connected and not running))

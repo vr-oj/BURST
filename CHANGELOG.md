@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Clarify the main recording workflow with Run without recording, a cancellable
+  Preparing state, and short reasons when recording is unavailable. Remove
+  unsupported Home/Step buttons, label the read-only box dialog Box status, and
+  explain ZERO and automatic Arduino start in the welcome instructions.
 - Keep up/down arrows on exposure, gain, and frame-rate fields when a
   Micro-Manager adapter does not report limits. Apply typed values after editing,
   preserve camera readback, and keep sliders disabled until a range is available.
