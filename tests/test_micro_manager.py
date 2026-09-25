@@ -324,6 +324,87 @@ class MicroManagerTests(unittest.TestCase):
         service.dispatch("timing", ("auto",))
         service.close()  # Cleanup must also release the pulse wait.
 
+    def custom_trigger_controls(self, library, modes, current):
+        self.core.getDeviceLibrary.return_value = library
+        self.core.setProperty("Camera", "TriggerMode", current)
+        self.core.getAllowedPropertyValues.side_effect = lambda camera, name: modes if name == "TriggerMode" else ()
+        self.core.setProperty.reset_mock()
+
+    def test_unfamiliar_adapter_modes_preview_without_trigger_rewrites(self):
+        for library, mode in (("PVCAM", "Internal Trigger"), ("PVCAM", "Timed"),
+                              ("FutureAdapter", "Camera default")):
+            with self.subTest(library=library, mode=mode):
+                self.custom_trigger_controls(library, (mode, "Other"), mode)
+                service = MicroManagerService(self.sdk)
+                try:
+                    result = service.dispatch("open", (self.profile, ""))
+                    self.assertEqual(result["trigger_configuration"], {})
+                    self.assertIsNone(result["trigger_input"])
+                    self.assertIsNotNone(service.dispatch("next", ()))
+                    self.assertEqual(self.core.getProperty("Camera", "TriggerMode"), mode)
+                    self.assertFalse(any(c.args[1] == "TriggerMode" for c in self.core.setProperty.call_args_list))
+                    with self.assertRaisesRegex(RuntimeError, "does not mean the camera lacks triggering"):
+                        service.dispatch("timing", ("auto",))
+                    self.assertEqual(service.trigger_configuration, {})
+                finally:
+                    service.close()
+
+    def test_ambiguous_mode_properties_do_not_block_configured_preview(self):
+        self.custom_trigger_controls("FutureAdapter", ("Internal", "External"), "External")
+        self.core.setProperty("Camera", "Trigger Mode", "Configured")
+        self.core.setProperty.reset_mock()
+        service = MicroManagerService(self.sdk)
+        self.addCleanup(service.close)
+        service.dispatch("open", (self.profile, ""))
+        self.assertIsNotNone(service.dispatch("next", ()))
+        self.assertEqual(self.core.getProperty("Camera", "TriggerMode"), "External")
+        self.assertEqual(self.core.getProperty("Camera", "Trigger Mode"), "Configured")
+        self.assertFalse(any(c.args[1] in {"TriggerMode", "Trigger Mode"} for c in self.core.setProperty.call_args_list))
+        with self.assertRaisesRegex(RuntimeError, "cannot yet configure external triggering"):
+            service.dispatch("timing", ("auto",))
+
+    def test_configured_preview_still_requires_actual_frames(self):
+        self.custom_trigger_controls("FutureAdapter", ("Configured",), "Configured")
+        self.core.getRemainingImageCount.return_value = 0
+        self.core.isSequenceRunning.return_value = True
+        thread = self.thread()
+        errors = []
+        thread.error.connect(lambda *args: errors.append(args))
+        with patch.object(thread.controller, "service"), \
+                patch("threads.mmcore_camera_thread.time.monotonic", side_effect=[0, 6]):
+            thread.run()
+        self.assertIn("No images for five seconds", errors[0][0])
+        self.assertIn("Advanced camera mapping", errors[0][0])
+        self.core.stopSequenceAcquisition.assert_called_once()
+        self.core.unloadAllDevices.assert_called_once()
+
+    def test_custom_timing_mapping_preserves_settings_and_verifies_arming(self):
+        self.custom_trigger_controls("FutureAdapter", ("Preview Cycle", "One Pulse"), "One Pulse")
+        self.profile["timing"] = {
+            "preview": [{"property": "TriggerMode", "value": "Preview Cycle"}],
+            "external": [{"property": "TriggerMode", "value": "One Pulse"}],
+        }
+        service = MicroManagerService(self.sdk)
+        self.addCleanup(service.close)
+        service.dispatch("open", (self.profile, ""))
+        service.dispatch("set", ("exposure", 23000))
+        service.dispatch("set", ("gain", 3))
+        for _ in range(2):
+            armed = service.dispatch("timing", ("auto",))
+            self.assertEqual(armed["trigger_configuration"], {"TriggerMode": "One Pulse"})
+            self.assertEqual(armed["trigger_input"]["selection"], "saved_mapping")
+            self.core.getRemainingImageCount.return_value = 0
+            self.core.isSequenceRunning.return_value = True
+            self.assertIsNone(service.dispatch("next", ()))
+            restored = service.dispatch("timing", ("",))
+            self.assertEqual(self.core.getProperty("Camera", "TriggerMode"), "Preview Cycle")
+            self.assertEqual(restored["controls"]["exposure"].value, 23000)
+            self.assertEqual(restored["controls"]["gain"].value, 3)
+        self.core.startContinuousSequenceAcquisition.side_effect = lambda _: self.core.setProperty(
+            "Camera", "TriggerMode", "Preview Cycle")
+        with self.assertRaisesRegex(RuntimeError, "settings changed while arming"):
+            service.dispatch("timing", ("auto",))
+
     def test_unknown_mm_adapter_with_external_enum_is_not_assumed_supported(self):
         service = MicroManagerService(self.sdk)
         self.addCleanup(service.close)

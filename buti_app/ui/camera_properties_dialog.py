@@ -9,17 +9,20 @@ class CameraPropertiesDialog(QDialog):
         super().__init__(panel)
         self.panel = panel
         self.controller = panel.controller
-        self.setWindowTitle("Micro-Manager Camera Properties")
+        plugin = any(name.startswith("vendor:") for name in self.controller.capabilities())
+        self.setWindowTitle("Camera Plugin Properties" if plugin else "Micro-Manager Camera Properties")
         self.resize(590, 360)
         layout = QVBoxLayout(self)
-        note = QLabel("These are the controls exposed by your camera's Micro-Manager adapter, in its native units. "
+        note = QLabel("These are the controls exposed by the camera plugin, in its native units. "
+            "Changes apply to this camera session. Trigger settings alone do not verify synchronization." if plugin else
+            "These are the controls exposed by your camera's Micro-Manager adapter, in its native units. "
             "Changes briefly restart the preview and apply to this camera session only. "
             "Save permanent settings in your Micro-Manager configuration. Trigger settings alone do not verify synchronization.")
         note.setWordWrap(True)
         layout.addWidget(note)
         self.names = QComboBox()
         for name in self.controller.capabilities():
-            if name.startswith(("mm:", "mmcore:")):
+            if name.startswith(("mm:", "mmcore:", "vendor:")):
                 self.names.addItem(name.split(":", 1)[1], name)
         layout.addWidget(self.names)
         self.current = QLabel()

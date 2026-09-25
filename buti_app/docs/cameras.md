@@ -10,11 +10,13 @@ startup dialogs.
 | --- | --- |
 | Native IC4 | The Imaging Source runtime/drivers and `imagingcontrol4` |
 | Micro-Manager | `pymmcore`, compatible 64-bit Micro-Manager device adapters and vendor drivers; automatic camera setup where supported, otherwise a saved `.cfg` |
+| Lab SDK plugin | A developer-provided BURST camera API v1 plugin, its own Python environment, SDK bindings and vendor drivers |
 
-BURST supports these two connections. IC4 remains the default native integration;
-other cameras use Micro-Manager's installed device adapters. Installing a vendor
-SDK alone does not create a connection: a compatible Micro-Manager adapter must
-expose the required camera features. Both integrations remain optional at runtime.
+IC4 remains the default native integration; everyday users can connect other
+cameras through Micro-Manager. Labs with developers can instead provide a direct
+SDK plugin, described in the [camera plugin guide](camera-plugins.md). Installing
+a vendor SDK alone does not create a connection: its Micro-Manager adapter or a
+BURST plugin must expose the required features. All routes are optional at runtime.
 
 ## Micro-Manager setup for installed BURST
 
@@ -170,8 +172,8 @@ after installing drivers or changing runtime paths; an already-running terminal 
 still pass obsolete paths to the camera helper.
 
 `BURST_CAMERA_BACKEND` / `BUTI_CAMERA_BACKEND` are optional diagnostic filters:
-`auto` (default) or `all` enables IC4 and Micro-Manager; `ic4` or `micromanager`
-selects one connection. A comma-separated list is also accepted. Removed backend
+`auto` (default) or `all` enables IC4, Micro-Manager and installed camera plugins;
+`ic4`, `micromanager` or `plugin:your_plugin_id` selects one connection. A comma-separated list is also accepted. Removed backend
 names do not fall back to another integration; clear an old filter to restore the
 normal camera list. Normal use needs no environment settings.
 
@@ -181,8 +183,10 @@ normal camera list. Normal use needs no environment settings.
 environment. An absent optional bridge does not abort a development build, but
 releases must include the bridges for the advertised camera connections. The build
 excludes the removed direct Spinnaker, GenTL and OpenCV capture packages, even if
-left installed in the developer's environment. External Python backend plugins
-are no longer discovered or bundled.
+left installed in the developer's environment. Camera API v1 plugins use their
+own Python/SDK environments; the packaged application includes their bridge as
+source resources. The earlier experimental in-process backend plugin mechanism
+is not supported.
 
 The Inno Setup installer packages BURST; it does not install camera SDKs/drivers or
 Micro-Manager. Users install compatible Micro-Manager adapters and their vendor
@@ -259,7 +263,13 @@ backend. Its device adapter determines the controls available to BURST:
   unexposed, not verified. TIScam requires its own compatible TIS drivers; installing
   IC4 alone does not establish TIScam compatibility. Its pulse-wait is released before
   stopping a sequence, and images from that transition are excluded from recording.
-- Other adapters can still preview and expose their native properties. An
+- Other adapters can preview using their configured settings and expose their
+  native properties. Unfamiliar or ambiguous trigger-mode names do not block
+  preview; BURST attempts acquisition and checks that frames arrive. If needed,
+  verify Live in Micro-Manager, close it, and load that camera configuration in
+  BURST. Custom preview assignments can be saved independently under Advanced
+  camera mapping; custom external assignments require preview assignments too,
+  so BURST can restore preview. A successful preview does not validate triggering. An
   unrecognized trigger interface reports that limitation rather than treating a
   missing property as proof the camera lacks hardware triggering.
 

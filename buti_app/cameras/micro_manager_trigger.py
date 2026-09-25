@@ -1,6 +1,9 @@
 """Translate MM device-adapter controls without assuming SDK property names."""
+import logging
+
 from .trigger import AUTO_TRIGGER, configure_external_trigger, verify_external_trigger
 
+log = logging.getLogger(__name__)
 
 # SpinnakerC exposes spaced names; other GenICam adapters use the node names.
 # https://github.com/micro-manager/mmCoreAndDevices/blob/main/DeviceAdapters/SpinnakerC/SpinnakerCCamera.cpp
@@ -53,11 +56,12 @@ class MicroManagerTrigger:
         self.core.setProperty(self.camera, self.properties[key], value)
 
     def preview(self):
-        if self.timing:
+        if self.timing.get("preview"):
             self._apply_mapping("preview")
             return
         if "TriggerMode" in self.ambiguous:
-            raise RuntimeError("Multiple trigger-mode properties; choose them in Advanced camera mapping.")
+            log.info("%s preview: keeping configured trigger properties (multiple mode controls).", self.library)
+            return
         if not self.properties["TriggerMode"]:
             return
         current, choices = self.read("TriggerMode"), self.choices("TriggerMode")
@@ -66,8 +70,14 @@ class MicroManagerTrigger:
         elif "Internal" in choices:
             value = "Internal"
         else:
-            raise RuntimeError(
-                f"{self.library}: configure free-running preview in Micro-Manager first.")
+            # MMCore has a common sequence-acquisition API, but no universal
+            # trigger-mode enum. A usable camera configuration must not be
+            # rejected just because its adapter uses unfamiliar property values.
+            # Try that configuration; actual frame delivery is checked by the
+            # acquisition thread. This does not authorize external recording.
+            log.info("%s preview: using configured %s=%r (available: %s).",
+                     self.library, self.properties["TriggerMode"], current, choices)
+            return
         if current != value:
             self.write("TriggerMode", value)
         verify_external_trigger(
@@ -75,7 +85,7 @@ class MicroManagerTrigger:
             {self.properties["TriggerMode"]: value})
 
     def arm(self, source):
-        if self.timing:
+        if self.timing.get("external"):
             try:
                 configured = self._apply_mapping("external")
                 return configured, {"name": "User-configured external input", "selection": "saved_mapping",

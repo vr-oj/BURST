@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 
 
 class CameraRegistry:
-    """Native IC4 first; other cameras use installed Micro-Manager adapters."""
+    """Native IC4, Micro-Manager, then explicitly installed lab plugins."""
     backend_types = (IC4Backend, MicroManagerBackend)
     default_backends = frozenset({"ic4", "micromanager"})
 
@@ -18,6 +18,8 @@ class CameraRegistry:
         self.backends = {}
         self.unavailable = {}
         selected = {s.strip() for s in backend_filter.lower().split(",")}
+        self._plugin_selection = selected.copy()
+        self.plugin_errors = {}
         if selected.intersection({"", "auto"}):
             selected = (selected - {"", "auto"}) | self.default_backends
         for backend_type in self.backend_types:
@@ -37,6 +39,16 @@ class CameraRegistry:
             except Exception as exc:
                 self.unavailable[key] = str(exc)
                 log.info("Camera backend %s: unavailable (%s)", key, exc)
+
+    def refresh_plugins(self):
+        from .plugins import load_plugins
+        plugins, self.plugin_errors = load_plugins()
+        selected = self._plugin_selection
+        plugins = {key: value for key, value in plugins.items()
+                   if selected.intersection({"", "auto", "all", key})}
+        self.backends = {key: backend for key, backend in self.backends.items() if not key.startswith("plugin:")}
+        self.backends.update(plugins)
+        return plugins
 
     def set_micro_manager_profiles(self, profiles):
         backend = self.backends.get("micromanager")

@@ -86,7 +86,10 @@ class MMCoreCameraThread(TimingCameraThread):
                                 pixel_format=f"Mono{bit_depth}" if components == 1 else "RGB8", metadata=metadata))
                         else:
                             if not source and time.monotonic() - last_frame > 5:
-                                raise RuntimeError("No images for five seconds. Check exposure, connection and configured trigger source. Use internal/free-running triggering for preview.")
+                                raise RuntimeError(
+                                    "No images for five seconds. Check exposure, connection and configured trigger source. "
+                                    "Confirm Live preview works in Micro-Manager, close it, and load that camera configuration in BURST. "
+                                    "If preview needs adapter-specific settings, save them under Advanced camera mapping > Preview timing.")
                             self.msleep(5)
                 finally:
                     self.controller.close()

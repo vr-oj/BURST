@@ -200,7 +200,7 @@ class MicroManagerService:
             core, camera = self.session.core, self.session.camera
             if source:
                 self.trigger_configuration, self.trigger_input = self.session.trigger.arm(source)
-                for name in (() if self.session.trigger.timing else ("Frame Rate Control Enabled", "AcquisitionFrameRateEnable")):
+                for name in (() if self.session.trigger.timing.get("external") else ("Frame Rate Control Enabled", "AcquisitionFrameRateEnable")):
                     try:
                         if core.hasProperty(camera, name) and not core.isPropertyReadOnly(camera, name):
                             self.preview_rate_switches.setdefault(name, core.getProperty(camera, name))

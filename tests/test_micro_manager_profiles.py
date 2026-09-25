@@ -60,6 +60,29 @@ class ProfileAndControlTests(unittest.TestCase):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
                 normalize_profile(dict(self.profile, **extra))
 
+    def test_preview_only_mapping_round_trips_without_authorizing_external_recording(self):
+        self.core.setProperty("Camera", "TriggerMode", "External")
+        profile = normalize_profile(dict(self.profile, timing={
+            "preview": [{"property": "TriggerMode", "value": "Internal"}]}))
+        path = Path(self.folder.name) / "preview-only.json"
+        write_profile(path, profile)
+        self.assertEqual(read_profile(path), profile)
+        controls = self.controls(profile).read_controls()
+        dialog = MicroManagerMappingDialog(profile, controls)
+        self.addCleanup(dialog.close)
+        dialog._save()
+        self.assertEqual(dialog.profile["timing"]["preview"], profile["timing"]["preview"])
+        self.assertFalse(dialog.profile["timing"].get("external"))
+        service = MicroManagerService(self.sdk)
+        self.addCleanup(service.close)
+        service.dispatch("open", (profile, ""))
+        self.assertEqual(self.core.getProperty("Camera", "TriggerMode"), "Internal")
+        self.assertIsNotNone(service.dispatch("next", ()))
+        with self.assertRaisesRegex(RuntimeError, "cannot yet configure external triggering"):
+            service.dispatch("timing", ("auto",))
+        self.assertEqual(service.trigger_configuration, {})
+        self.assertEqual(self.core.getProperty("Camera", "TriggerMode"), "Internal")
+
     def test_stale_mapping_fails_before_acquisition(self):
         with self.assertRaisesRegex(ValueError, "missing property"):
             self.controls(dict(self.profile, bindings={"gain": {"property": "Missing", "unit": "dB"}}))

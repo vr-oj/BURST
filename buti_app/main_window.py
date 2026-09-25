@@ -176,6 +176,7 @@ class MainWindow(QMainWindow):
         self.camera_info_panel = None
         self.camera_tabs = None
         self.camera_thread = None
+        self._plugin_search = None
 
         # Plot controls
         self.plot_control_panel = None
@@ -214,6 +215,7 @@ class MainWindow(QMainWindow):
         self.showMaximized()
         QTimer.singleShot(0, self._equalize_workspace_panels)
         QTimer.singleShot(250, self._equalize_workspace_panels)
+        QTimer.singleShot(0, self._refresh_plugin_cameras)
 
     # ─── UI Builders ────────────────────────────────────────────────────────
 
@@ -509,6 +511,47 @@ class MainWindow(QMainWindow):
         self._populate_device_list()
         self._refresh_serial_port_list()
         self.statusBar().showMessage("Device lists refreshed", 3000)
+        self._refresh_plugin_cameras()
+
+    def _refresh_plugin_cameras(self):
+        if self._closing or self.camera_thread is not None or self._recording_state != "idle":
+            return
+        if self._plugin_search is not None:
+            return
+        old_plugins = any(key.startswith("plugin:") for key in self.camera_registry.backends) if isinstance(self.camera_registry.backends, dict) else False
+        backends = self.camera_registry.refresh_plugins()
+        if not isinstance(backends, dict) or not backends:
+            if old_plugins:
+                self._populate_device_list()
+            return
+        from threads.plugin_discovery_thread import PluginDiscoveryThread
+        self._plugin_search = PluginDiscoveryThread(backends, self)
+        self._plugin_search.finished.connect(self._plugin_search_finished)
+        self.statusBar().showMessage("Finding cameras from installed plugins…")
+        self._plugin_search.start()
+
+    def _plugin_search_finished(self):
+        search = self._plugin_search
+        if search is None:
+            return
+        self._plugin_search = None
+        for key, backend in search.backends.items():
+            backend.devices = search.results.get(key, [])
+        self.camera_registry.plugin_errors.update(search.errors)
+        for key, error in search.errors.items():
+            log.warning("Camera plugin %s: %s", key, error)
+        if not self._closing:
+            if self.camera_thread is None and self._recording_state == "idle":
+                self._populate_device_list()
+            self.statusBar().showMessage(
+                "Camera plugin search finished. Details are under Acquisition → Advanced → Camera plugins…"
+                if search.errors else "Camera plugin search finished", 5000)
+        search.deleteLater()
+
+    def _show_camera_plugins(self):
+        from ui.camera_plugins_dialog import CameraPluginsDialog
+        CameraPluginsDialog(self).exec_()
+
 
     @pyqtSlot(int)
     def _on_device_selected(self, index):
@@ -823,7 +866,7 @@ class MainWindow(QMainWindow):
         if self._timing_transition:
             detail = "Preparing camera for recording…" if self._timing_transition == "arming" else "Returning to preview…"
         elif self._camera_armed:
-            detail = "Arduino-triggered recording" if self._recording_state == "recording" else "Camera ready for Arduino triggers"
+            detail = "Recording rate controlled by Arduino triggers" if self._recording_state == "recording" else "Camera ready for Arduino triggers"
         elif self._hardware_trigger_source:
             detail = "Preview · Use ZERO on the Arduino box before recording."
         else:
@@ -948,6 +991,7 @@ class MainWindow(QMainWindow):
         self.timing_action.triggered.connect(self._configure_timing)
         advanced.addAction(self.timing_action)
         advanced.addAction("Arduino box status…", self._show_box_settings)
+        advanced.addAction("Camera plugins…", self._show_camera_plugins)
         capture_menu = advanced.addMenu("BURST recording mode")
         self.capture_mode_group = QActionGroup(self)
         self.capture_mode_group.setExclusive(True)
@@ -1959,6 +2003,7 @@ class MainWindow(QMainWindow):
             "timing_mode": "force_only" if self._recording_capture_mode == "force_only" else ("external_trigger" if self._camera_armed else "software"),
             "trigger_configuration": getattr(self.camera_thread, "trigger_configuration", {}),
             "trigger_input": getattr(self.camera_thread, "trigger_input", None),
+            "trigger_rate_control": getattr(self.camera_thread, "trigger_rate_control", {}),
             "timing_validation": "not_verified_by_burst",
             "box_observation_before_run": self._box_observation.snapshot(),
             "first_sample_policy": "requires_zeroed_box" if self._camera_armed else "baseline_only_trigger_phase_unknown",
@@ -2367,6 +2412,14 @@ class MainWindow(QMainWindow):
             self._recorder_thread = None
 
         self._closing = True
+        search = self._plugin_search
+        if search is not None and search.isRunning():
+            search.requestInterruption()
+            if not search.wait(2000):
+                self._closing = False
+                event.ignore()
+                QTimer.singleShot(500, self.close)
+                return
         checker = self.update_checker
         if checker is not None:
             try:

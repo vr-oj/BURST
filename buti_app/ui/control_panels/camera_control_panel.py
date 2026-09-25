@@ -286,7 +286,7 @@ class CameraControlPanel(QWidget):
 
     def _refresh_auto_values(self):
         capabilities = self.controller.capabilities() if self.controller else {}
-        self.properties_button.setVisible(any(key.startswith(("mm:", "mmcore:")) for key in capabilities))
+        self.properties_button.setVisible(any(key.startswith(("mm:", "mmcore:", "vendor:")) for key in capabilities))
         self.properties_button.setEnabled(not self.is_recording)
         self._control_error = self.controller.last_error if self.controller else ""
         self.control_message.setToolTip(self._control_error)
@@ -311,6 +311,11 @@ class CameraControlPanel(QWidget):
             tooltip = ("Type a value or use the arrows. Press Enter to apply typed changes. "
                        "The camera checks which values it accepts.") if unbounded else (
                 issues.get(name, "Not exposed by this camera connection.") if prop is None else "")
+            if name == "fps" and prop is not None:
+                tooltip = (tooltip + "\n" if tooltip else "") + (
+                    "Camera operating speed for free-running preview. During triggered recording, "
+                    "the Arduino controls when images are taken. The receiving FPS above shows "
+                    "the actual image rate, which can be lower than this setting.")
             slider.setToolTip("The camera does not report a slider range. Use the number field instead."
                               if unbounded else tooltip)
             spin.setToolTip(tooltip)

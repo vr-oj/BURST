@@ -59,6 +59,21 @@ enter that recording. Stop Recording drains the recording before restoring previ
 on the same open camera, preserving exposure/gain and other image settings.
 Arduino-triggered recording is the default. BURST never silently changes modes after failure.
 
+For native IC4 cameras, preview FPS is separate from Arduino recording cadence.
+Before arming, BURST disables the camera's frame-rate limiter when that switch is
+available. Otherwise it selects the highest rate reported for the current image
+format/resolution, capped to preserve the current exposure. This handles cameras
+such as DMK 37BUX250 that expose AcquisitionFrameRate without
+AcquisitionFrameRateEnable. BURST verifies rate and manual image settings again
+after acquisition starts, and restores the user's preview rate when recording
+ends. A rejected setting or changed readback prevents the Arduino from starting.
+The run manifest records `trigger_rate_control`, including unavailable properties.
+The camera card's receiving FPS measures delivered images; a camera operating at
+75 FPS can deliver 10 triggered images per second when the box requests 10.
+Exposure/readout and transfer capacity still limit the trigger cadence that a
+particular camera can sustain. Micro-Manager and plugin timing remain governed by
+their supported adapters and mappings.
+
 **Software pairing (approximate):** explicitly enable **Acquisition → Advanced →
 Allow approximate software pairing** when this limitation is acceptable. The choice
 resets when changing cameras or restarting BURST. It works with free-running cameras

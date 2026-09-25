@@ -48,8 +48,8 @@ def normalize_profile(profile, *, check_paths=True):
     timing = result.get("timing", {})
     if not isinstance(timing, dict) or set(timing) - {"preview", "external"}:
         raise ValueError("Timing mappings contain preview and external assignments only.")
-    if timing and not all(timing.get(mode) for mode in ("preview", "external")):
-        raise ValueError("Provide both preview and external-trigger assignments.")
+    if timing.get("external") and not timing.get("preview"):
+        raise ValueError("External-trigger assignments need preview assignments to restore the camera afterwards.")
     for assignments in timing.values():
         if not isinstance(assignments, list) or len(assignments) > 32:
             raise ValueError("Use at most 32 ordered timing assignments.")

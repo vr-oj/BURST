@@ -2,6 +2,15 @@
 
 **BURST** (BUTI Uniaxial Recording of Strain & Tension) is a Python application for acquisition of force data from the BUTI Arduino Box and live camera imaging. The app listens to the BUTI Arduino Box to stream force measurements, live plots force vs. time, and saves force samples and associated images (CSV + optional TIFF stack) for later analysis.
 
+BURST integrates directly with **IC Imaging Control 4 (IC4) cameras** and uses
+the paired **BUTI Arduino Box to control camera triggers** through a physical
+trigger cable. The native IC4 recording workflow has been validated on the
+DMK 37BUX250 setup described in the [camera validation record](buti_app/docs/micro-manager-validation.md).
+
+**Micro-Manager integration is currently in testing** as a way to add cameras
+from other manufacturers. Compatibility and Arduino-triggered recording still
+need validation for each camera, adapter, driver, and trigger connection.
+
 ---
 See [Arduino compatibility and capture modes](buti_app/docs/arduino.md) for supported controls and synchronization limits.
 
@@ -37,16 +46,25 @@ reported by the Arduino; change experiment settings on the box itself.
 - Detects the end of a run with an adaptive serial-silence timeout while keeping the port connected.
 
 ### High-Speed Camera Preview & Control
+- Integrates natively with IC4 cameras, including exposure, gain, automatic modes,
+  and preview frame rate where supported. During Arduino-triggered recording,
+  BURST prepares the camera's operating rate independently of preview FPS,
+  verifies the settings, and restores the preview rate afterward. The Arduino's
+  pulses determine the recording rate within the camera's capabilities.
 - Lists native IC4 cameras first, followed by saved Micro-Manager camera connections.
-- Add Micro-Manager cameras from the last item in **Camera Device → Micro-Manager Camera Setup…**.
+- **Micro-Manager (in testing):** uses installed device adapters to add other camera vendors.
+  Add a camera from the last item in **Camera Device → Micro-Manager Camera Setup…**.
   Use **Find cameras** or **Load configuration…**, add a camera, and save.
   Compatible cameras use the normal image controls; **Resolution** offers reported
   binning and sensor regions. Additional controls are under **Camera properties…**.
   Optional mappings and profile sharing are under **Advanced options** in setup.
   Compatible Micro-Manager adapters and vendor drivers must be installed; users do
-  not need to copy files into BURST's installation folder. See [camera setup](buti_app/docs/cameras.md).
-- Uses Micro-Manager's installed device adapters for other camera vendors.
-- Enables exposure, gain, auto modes, and frame rate controls according to device capabilities.
+  not need to copy files into BURST's installation folder. A working preview does
+  not validate Arduino-triggered recording. See [camera setup](buti_app/docs/cameras.md)
+  and the [current validation status](buti_app/docs/micro-manager-validation.md).
+- Labs with developers can also install a [camera SDK plugin](buti_app/docs/camera-plugins.md)
+  without rebuilding BURST. Plugins use the normal controls/recording workflow
+  and their own Python/SDK environment; IC4 and Micro-Manager users need no plugin.
 - See [camera SDK installation, compatibility, and packaging](buti_app/docs/cameras.md).
 
 ### Force and image output
@@ -140,7 +158,7 @@ in a Mac build. BURST does not currently provide a macOS installer.
 ### Windows Executable
 1. Download `BURST_Setup_<version>.exe` from the GitHub release.
 2. Run the installer and follow the setup wizard.
-3. Install the IC4 runtime/drivers, or compatible Micro-Manager and its camera adapter's required vendor drivers. See [camera setup](buti_app/docs/cameras.md).
+3. Install the IC4 runtime/drivers for native camera integration. To test other cameras through Micro-Manager, install compatible Micro-Manager adapters and their required vendor drivers. See [camera setup](buti_app/docs/cameras.md).
 4. Launch **BURST** from the Start menu or optional desktop shortcut.
 
 Installed builds check for newer GitHub releases automatically without delaying
@@ -166,12 +184,12 @@ remove that warning for an official public release.
    ```powershell
    .venv\Scripts\python.exe -m pip install -r buti_app\requirements.txt
    ```
-4. Install your camera's runtime/drivers. Cameras beyond native IC4 connect through Micro-Manager; no vendor Python wheel is required. See [camera setup](buti_app/docs/cameras.md).
+4. Install your camera's runtime/drivers. Micro-Manager support for cameras beyond native IC4 is currently in testing; that route uses installed adapters and does not require a vendor Python wheel. See [camera setup](buti_app/docs/cameras.md).
 
 ### Building a Windows Release Installer
 
 BURST uses one version source: `buti_app/VERSION`. The current version is
-`1.5.0`. Update that file for application/installer versioning, and update the
+`1.5.2`. Update that file for application/installer versioning, and update the
 changelog and release instructions for each release.
 
 Install the requirements and pinned PyInstaller version once:
@@ -191,13 +209,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 The script checks the Python environment, runs all tests, builds BURST with the
 repository's PyInstaller spec, compiles the Inno Setup installer, and writes:
 
-- `installer_output\BURST_Setup_1.5.0.exe`
-- `installer_output\BURST_Setup_1.5.0.exe.sha256`
+- `installer_output\BURST_Setup_1.5.2.exe`
+- `installer_output\BURST_Setup_1.5.2.exe.sha256`
 
 BURST releases are built on the target Windows packaging computer and uploaded
 manually; GitHub Actions is not used. After the build passes hardware testing,
-merge the release commit into `main`, create the matching `v1.5.0` tag and
-GitHub release, paste the `1.5.0` section from `CHANGELOG.md`, and attach both
+merge the release commit into `main`, create the matching `v1.5.2` tag and
+GitHub release, paste the `1.5.2` section from `CHANGELOG.md`, and attach both
 files above.
 
 ---
