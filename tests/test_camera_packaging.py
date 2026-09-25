@@ -46,3 +46,9 @@ class CameraPackagingTests(unittest.TestCase):
         self.assertIn("pymmcore", analysis["hiddenimports"])
         self.assertNotIn("pymmcore", analysis["excludes"])
         self.assertIn(os.path.join("buti_app", "hooks", "mm_worker_bootstrap.py"), analysis["runtime_hooks"])
+
+    def test_external_plugin_bridge_is_shipped_as_source_without_vendor_bindings(self):
+        analysis, _ = self.run_spec()
+        self.assertIn((os.path.join("buti_app", "burst_camera_plugin", "*.py"),
+                       os.path.join("buti_app", "burst_camera_plugin")), analysis["datas"])
+        self.assertNotIn("adapter", analysis["hiddenimports"])

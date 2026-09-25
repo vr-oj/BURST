@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+- Prepare native IC4 cameras for Arduino-triggered recording independently of
+  preview FPS. Verify a supported rate-limit disable switch, or select the highest
+  camera-reported rate compatible with the current exposure when that switch is
+  absent. Verify settings after stream start, restore preview FPS after recording,
+  and save timing readback in the run manifest. Report preparation failures before
+  starting the Arduino. Clarify configured camera speed versus received FPS.
+- Document the validated native IC4/Arduino recording setup and label
+  Micro-Manager integration as in testing for other camera/adapter combinations.
+
+- Add optional camera SDK plugins for labs, alongside unchanged built-in IC4 and
+  Micro-Manager routes. API v1 exposes discovery, shared controls, original pixels,
+  camera metadata and verified trigger transitions through the existing recorder.
+- Load plugin SDKs in independent Python environments through isolated helpers.
+  Include the bridge in packaged builds, with bounded, cancellable background
+  discovery and an advanced plugin status/folder panel.
+- Include a runnable simulated camera, developer guide and reusable preview
+  validator. Automated checks do not certify a third-party camera's physical timing.
+
+## 1.5.1
+
+- Allow Micro-Manager preview to use the configured camera settings when an
+  adapter's trigger-mode names are unfamiliar or ambiguous. Verify actual frame
+  delivery instead of rejecting the camera before acquisition. This applies to
+  all adapters and adds no camera-specific mode lists.
+- Allow saved preview-only timing assignments for custom configurations. External
+  mappings still require preview assignments so BURST can restore preview after
+  recording. Preview success does not imply that external triggering is configured.
+- Give configuration and mapping guidance if no preview frames arrive. Keep
+  trigger arming/readback checks and the explicit approximate-recording choice.
+
+Reported on a Photometrics Kinetix22 with PVCAM 3.10.2 on a separate Windows computer.
+Automated tests cover configured preview and mapped recording transitions; physical Kinetix22
+preview and Arduino-triggered recording still require validation on that computer.
+
 ## 1.5.0
 
 - Add optional Micro-Manager camera support alongside native IC4. Find compatible

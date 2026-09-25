@@ -67,6 +67,10 @@ data_files = [
     ),
     (os.path.join("buti_app", "docs", "*"), os.path.join("buti_app", "docs")),
     (os.path.join("buti_app", "VERSION"), "buti_app"),
+    # Source bridge executed by a lab plugin's own Python environment. Vendor
+    # bindings remain outside the frozen application and need no BURST rebuild.
+    (os.path.join("buti_app", "burst_camera_plugin", "*.py"),
+     os.path.join("buti_app", "burst_camera_plugin")),
 ]
 
 data_files.extend(camera_data)

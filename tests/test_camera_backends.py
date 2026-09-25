@@ -93,6 +93,71 @@ class CameraBackendTests(unittest.TestCase):
         registry.close()
         sdk.Library.shutdown.assert_called_once()
 
+    def test_ic4_without_rate_switch_arms_at_max_and_rejects_post_start_rate_reset(self):
+        from threads import sdk_camera_thread
+        class MissingFeature(RuntimeError):
+            code = 101
+        for reset_on_start in (False, True):
+            with self.subTest(reset_on_start=reset_on_start):
+                nodes = {name: NS(value=value, entries=[NS(name=n) for n in choices]) for name, value, choices in (
+                    ("TriggerMode", "Off", ("Off", "On")), ("TriggerSource", "Line0", ("Line0",)),
+                    ("TriggerSelector", "FrameStart", ("FrameStart",)), ("TriggerActivation", "RisingEdge", ("RisingEdge",)),
+                    ("AcquisitionMode", "Continuous", ("Continuous",)), ("ExposureAuto", "Off", ("Off", "Continuous")),
+                    ("GainAuto", "Off", ("Off", "Continuous")))}
+                nodes.update(ExposureTime=NS(value=4480.), Gain=NS(value=0.),
+                             AcquisitionFrameRate=NS(value=10., minimum=1., maximum=75., increment_mode=NS(name="NONE")))
+                class Props:
+                    def __iter__(self):
+                        return iter(())
+                    def find(self, name):
+                        if name not in nodes:
+                            raise MissingFeature(name)
+                        return nodes[name]
+                    find_float = find_boolean = find_enumeration = find
+                grabber = Mock(device_property_map=Props())
+                sdk = NS(Grabber=lambda: grabber, Library=Mock(), LogLevel=NS(INFO=1), LogTarget=NS(STDERR=1),
+                         ErrorCode=NS(GenICamFeatureNotFound=101), QueueSink=Mock(), PixelFormat=NS(Mono8=1, Mono16=2),
+                         StreamSetupOption=NS(ACQUISITION_START=1))
+                stream_states, modes, errors, readbacks = [], [], [], []
+                def stream_setup(*args, **kwargs):
+                    stream_states.append((nodes["TriggerMode"].value, nodes["AcquisitionFrameRate"].value))
+                    if reset_on_start and len(stream_states) == 2:
+                        nodes["AcquisitionFrameRate"].value = 10.
+                grabber.stream_setup.side_effect = stream_setup
+                with patch.object(sdk_camera_thread, "ic4", sdk), patch.dict(sys.modules, {"imagingcontrol4": sdk}), \
+                        patch.object(sdk_camera_thread, "IC4Controls", return_value=NS(read_controls=lambda: {})):
+                    thread = SDKCameraThread()
+                    thread.set_device_info(NS(model_name="Test", serial="1"))
+                    def preview_ready():
+                        nodes["ExposureAuto"].value = nodes["GainAuto"].value = "Off"
+                        nodes["ExposureTime"].value = 4480.
+                        nodes["Gain"].value = 0.
+                        thread.request_timing("auto")
+                    def timing_ready(armed):
+                        modes.append(armed)
+                        if armed:
+                            readbacks.append(thread.trigger_rate_control)
+                            thread.request_timing("")
+                        else:
+                            thread.stop()
+                    thread.grabber_ready.connect(preview_ready)
+                    thread.timing_ready.connect(timing_ready)
+                    thread.error.connect(lambda *args: errors.append(args))
+                    thread.run()
+                self.assertEqual(stream_states[:2], [("Off", 10.), ("On", 75.)])
+                self.assertEqual(nodes["AcquisitionFrameRate"].value, 10.)
+                self.assertEqual(nodes["ExposureTime"].value, 4480.)
+                self.assertEqual(nodes["Gain"].value, 0.)
+                self.assertEqual(nodes["TriggerMode"].value, "Off")
+                if reset_on_start:
+                    self.assertEqual(modes, [])  # No ready signal may start the Arduino.
+                    self.assertIn("changed while arming", errors[0][0])
+                else:
+                    self.assertEqual(errors, [])
+                    self.assertEqual(modes, [True, False])
+                    self.assertEqual(stream_states[-1], ("Off", 10.))
+                    self.assertEqual(readbacks[0]["readback"]["AcquisitionFrameRate"], 75.)
+
     def test_thread_routing(self):
         from threads import sdk_camera_thread
         with patch.object(sdk_camera_thread, "ic4", Mock()):

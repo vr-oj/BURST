@@ -11,6 +11,7 @@ import numpy as np
 from cameras.frame_data import FrameData
 from cameras.trigger import verify_external_trigger
 from cameras.ic4_trigger import configure_ic4_trigger
+from cameras.ic4_recording_rate import IC4RecordingRate
 from cameras.timing_thread import TimingCameraThread
 
 from utils.config import DEFAULT_FPS
@@ -54,6 +55,7 @@ class SDKCameraThread(TimingCameraThread):
         # Keep a reference to the sink so we can stop it later
         self._sink = None
         self._accept_frames = True
+        self.trigger_rate_control = {}
 
     def set_device_info(self, dev_info):
         self._device_info = dev_info
@@ -68,6 +70,7 @@ class SDKCameraThread(TimingCameraThread):
         return configured
 
     def run(self):
+        recording_rate = None
         try:
             # ─── Initialize IC4 (with “already called” catch) ─────────────────
             try:
@@ -206,11 +209,9 @@ class SDKCameraThread(TimingCameraThread):
 
             # ─── Signal “grabber_ready” so UI can enable controls ────────────────
             source = getattr(self, "hardware_trigger_source", "")
+            recording_rate = IC4RecordingRate(ic4, props)
             if source:
-                try:
-                    props.find_boolean("AcquisitionFrameRateEnable").value = False
-                except Exception:
-                    log.info("IC4 frame-rate enable switch unavailable; monitoring requested images.")
+                recording_rate.prepare()
                 self.trigger_configuration = self._configure_trigger(props, source)
             adapter = IC4Controls(self.grabber)
             self.controller.open(adapter)
@@ -247,31 +248,29 @@ class SDKCameraThread(TimingCameraThread):
             # ─── Frame loop: IC4 calls frames_queued() whenever a new buffer is ready ─
             if source:
                 verify_external_trigger(lambda n: props.find_enumeration(n).value, self.trigger_configuration)
+                recording_rate.verify()
+                self.trigger_rate_control = recording_rate.readback()
             self.controller.service(adapter)
             self.grabber_ready.emit()
-            preview_rate_enable = None
-
             def switch_timing(requested):
-                nonlocal preview_rate_enable
                 self._accept_frames = False
                 self.grabber.stream_stop()
                 if requested:
-                    try:
-                        node = props.find_boolean("AcquisitionFrameRateEnable")
-                        preview_rate_enable = node.value
-                        node.value = False
-                    except Exception:
-                        pass
+                    recording_rate.prepare()
                     configured = self._configure_trigger(props, requested)
                 else:
                     props.find_enumeration("TriggerMode").value = "Off"
                     self.trigger_input = None
-                    if preview_rate_enable is not None:
-                        props.find_boolean("AcquisitionFrameRateEnable").value = preview_rate_enable
+                    recording_rate.restore()
                     configured = {}
                 self.grabber.stream_setup(self._sink, setup_option=StreamSetupOption.ACQUISITION_START)
                 if configured:
                     verify_external_trigger(lambda n: props.find_enumeration(n).value, configured)
+                    recording_rate.verify()
+                    self.trigger_rate_control = recording_rate.readback()
+                    log.info("IC4 recording timing readback: %s", self.trigger_rate_control)
+                else:
+                    self.trigger_rate_control = {}
                 self._accept_frames = True
                 log.info("IC4 acquisition timing: %s", configured or "preview")
                 return configured
@@ -295,6 +294,12 @@ class SDKCameraThread(TimingCameraThread):
                     self.grabber.stream_stop()
                 except Exception:
                     pass
+                if recording_rate is not None:
+                    try:
+                        self.grabber.device_property_map.find_enumeration("TriggerMode").value = "Off"
+                        recording_rate.restore()
+                    except Exception as exc:
+                        log.error("Could not restore IC4 preview after shutdown/error: %s", exc)
                 try:
                     self.grabber.device_close()
                 except Exception as exc:

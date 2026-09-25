@@ -237,7 +237,7 @@ class CameraInfoPanel(QWidget):
         if self._resolution_text:
             details.append(self._resolution_text)
         if self._fps_value is not None:
-            details.append(f"{float(self._fps_value):.1f} fps")
+            details.append(f"Receiving {float(self._fps_value):.1f} fps")
         if self._frame_count:
             details.append(f"Frame {self._frame_count:,}")
         self.stream_details.setText("  •  ".join(details) if details else EM_DASH)

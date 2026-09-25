@@ -1,0 +1,10 @@
+{
+  "api_version": 1,
+  "id": "lab_demo",
+  "name": "Lab demo camera",
+  "version": "1.0.0",
+  "python": ".venv/Scripts/python.exe",
+  "entry_point": "adapter:DemoCamera",
+  "dll_directories": [],
+  "enabled": true
+}

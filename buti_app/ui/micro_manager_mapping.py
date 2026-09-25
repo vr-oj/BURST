@@ -54,8 +54,9 @@ class MicroManagerMappingDialog(QDialog):
         for mode, title in (("preview", "Preview timing"), ("external", "External trigger timing")):
             page = QWidget()
             box = QVBoxLayout(page)
-            message = QLabel("Optional ordered assignments before starting acquisition. Leave BOTH timing tabs empty "
-                "for automatic setup. External assignments must select the physical Arduino trigger input; "
+            message = QLabel("Optional ordered assignments before starting acquisition. For custom preview, fill only Preview timing. "
+                "For custom external triggering, fill both timing tabs so preview can be restored afterwards. "
+                "Leave both empty for automatic setup. External assignments must select the physical Arduino trigger input; "
                 "readback cannot check the cable or exposure timing. Image settings are preserved separately.")
             message.setWordWrap(True)
             box.addWidget(message)
