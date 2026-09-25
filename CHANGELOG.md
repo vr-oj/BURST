@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.5.2
+
+BURST integrates natively with IC4 cameras and the paired BUTI Arduino Box's
+camera-trigger output. Micro-Manager integration is currently in testing as a
+way to add cameras from other manufacturers.
 
 - Prepare native IC4 cameras for Arduino-triggered recording independently of
   preview FPS. Verify a supported rate-limit disable switch, or select the highest
@@ -10,7 +14,9 @@
   starting the Arduino. Clarify configured camera speed versus received FPS.
 - Document the validated native IC4/Arduino recording setup and label
   Micro-Manager integration as in testing for other camera/adapter combinations.
-
+- Include the Micro-Manager preview compatibility updates and preview-only timing
+  mappings from 1.5.1. Each camera/adapter combination still requires validation
+  for Arduino-triggered recording.
 - Add optional camera SDK plugins for labs, alongside unchanged built-in IC4 and
   Micro-Manager routes. API v1 exposes discovery, shared controls, original pixels,
   camera metadata and verified trigger transitions through the existing recorder.
@@ -19,6 +25,13 @@
   discovery and an advanced plugin status/folder panel.
 - Include a runnable simulated camera, developer guide and reusable preview
   validator. Automated checks do not certify a third-party camera's physical timing.
+
+Validated on a DMK 37BUX250 with the paired Arduino: the 1.5.2-rc.1 test run saved
+all 660 requested images and 660 force samples at approximately 10 FPS, with no
+recording-integrity issues. Preview was set to 10 FPS and the camera's recording
+operating rate was prepared automatically. See the
+[camera validation record](buti_app/docs/micro-manager-validation.md) for the
+test scope and remaining hardware checks.
 
 ## 1.5.1
 
