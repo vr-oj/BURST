@@ -203,7 +203,6 @@ class MainWindow(QMainWindow):
         self._populate_device_list()
         self._set_initial_control_states()
         self.camera_info_panel.rate_help_button.clicked.connect(self._show_camera_rate_help)
-        self.camera_info_panel.rate_help_button.setText("Recording help")
         self.camera_control_panel.camera_settings_changed.connect(self._camera_rate_monitor.reset)
         self._camera_rate_timer = QTimer(self)
         self._camera_rate_timer.setInterval(1000)
@@ -857,8 +856,8 @@ class MainWindow(QMainWindow):
     def _update_camera_rate_status(self):
         if self.camera_thread is None or not self.camera_thread.isRunning():
             self._camera_rate_monitor.reset()
-            self.camera_info_panel.rate_status.setText("Start the camera to preview and adjust the image.")
-            self.camera_info_panel.rate_status.setStyleSheet("")
+            self.camera_info_panel.rate_help_button.setToolTip("Recording setup and camera-rate diagnostics.")
+            self.camera_info_panel.rate_help_button.setStyleSheet("")
             return
         measured = self._camera_rate_monitor.fps(time.monotonic())
         self.camera_info_panel.set_fps(measured)
@@ -871,11 +870,11 @@ class MainWindow(QMainWindow):
             detail = "Preview · Use ZERO on the Arduino box before recording."
         else:
             detail = "Approximate software pairing · " + check.detail
-        self.camera_info_panel.rate_status.setText(detail)
-        self.camera_info_panel.rate_status.setToolTip(
+        self.camera_info_panel.rate_help_button.setToolTip(
+            detail + "\n\n" + check.detail + "\n\n"
             "Arduino-triggered recording requires the trigger cable and a supported camera input. "
             "BURST checks settings and image/data association; physical exposure-to-force timing requires setup validation.")
-        self.camera_info_panel.rate_status.setStyleSheet("" if check.passed else "color: #f3c969;")
+        self.camera_info_panel.rate_help_button.setStyleSheet("" if check.passed else "color: #f3c969;")
 
     def _show_camera_rate_help(self, detail=None):
         if not isinstance(detail, str):
